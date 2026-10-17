@@ -47,6 +47,7 @@ import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
 import { ProfileEditor } from "./components/ProfileEditor";
+import { PluginsPanel } from "./components/PluginsPanel";
 import { TeamPlanPanel } from "./components/TeamPlanPanel";
 import { TeamRunPanel } from "./components/TeamRunPanel";
 import type { PaneController } from "./components/TerminalPane";
@@ -81,6 +82,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** Set while the profile editor is on screen. */
   const [profilesOpen, setProfilesOpen] = useState(false);
+  /** Set while the plugin panel is on screen. */
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   /**
    * Set while the palette is asking for a task. The worktree flag is decided
    * when the agent is picked, because it is part of which entry was picked.
@@ -455,6 +458,13 @@ export default function App() {
         run: () => setProfilesOpen(true),
       },
       {
+        id: "app.plugins",
+        title: "Plugins…",
+        group: "App",
+        hint: null,
+        run: () => setPluginsOpen(true),
+      },
+      {
         id: "pane.splitRight",
         title: "Split pane right",
         group: "Pane",
@@ -825,6 +835,10 @@ export default function App() {
           status={teamRun}
           onClose={() => setShowRun(false)}
         />
+      ) : null}
+
+      {pluginsOpen ? (
+        <PluginsPanel onClose={() => setPluginsOpen(false)} />
       ) : null}
 
       {profilesOpen ? (

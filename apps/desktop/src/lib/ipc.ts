@@ -235,6 +235,70 @@ export const agentOpen = (request: AgentOpenRequest) =>
 /** Where the activity log lives. */
 export const auditPath = () => invoke<string>("audit_path");
 
+/** One tool a plugin offers, as the server described it. */
+export interface PluginToolView {
+  name: string;
+  title: string | null;
+  description: string | null;
+  /** The tool's own JSON Schema for its arguments. */
+  inputSchema: unknown;
+}
+
+/** One server from the plugin file, and what it is doing. */
+export interface PluginView {
+  id: string;
+  title: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+  /** `declared` before anything has started it, then `running` or `broken`. */
+  state: "declared" | "running" | "broken";
+  /** Why it is broken, when it is. Remembered, not retried. */
+  problem: string | null;
+  peer: string | null;
+  era: "modern" | "legacy" | null;
+  protocolVersion: string | null;
+  /** The last thing the server said on its own error stream. */
+  lastWords: string[];
+  tools: PluginToolView[];
+}
+
+export interface PluginsView {
+  /** Where the file is, so it can be edited or opened. */
+  path: string;
+  /** Problems with the file itself, which serde cannot see. */
+  problems: string[];
+  servers: PluginView[];
+}
+
+/** What a tool call produced. */
+export type PluginCalled =
+  | {
+      kind: "done";
+      isError: boolean;
+      text: string[];
+      other: string[];
+      structured: unknown | null;
+    }
+  | { kind: "needsInput"; asked: string[] };
+
+export const pluginsList = () => invoke<PluginsView>("plugins_list");
+
+/** Read the file again. This is what clears a remembered failure. */
+export const pluginsReload = () => invoke<PluginsView>("plugins_reload");
+
+/** Start a plugin and see what it offers. */
+export const pluginsOpen = (id: string) => invoke<PluginsView>("plugins_open", { id });
+
+/**
+ * Call one tool.
+ *
+ * The arguments go as they are: a tool's schema is its own, and the app does not
+ * guess at a form for it.
+ */
+export const pluginsCall = (id: string, tool: string, args: unknown) =>
+  invoke<PluginCalled>("plugins_call", { id, tool, arguments: args });
+
 export type Archetype =
   | "reviewer"
   | "pipeline"

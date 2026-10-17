@@ -112,7 +112,7 @@ fn main() -> ExitCode {
                     println!("    structured: {structured}");
                 }
             }
-            Ok(Called::NeedsInput(asked)) => {
+            Ok(Called::NeedsInput { asked }) => {
                 println!("    asked for input first: {}", asked.join(", "));
             }
             Err(error) => {

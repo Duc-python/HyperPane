@@ -19,6 +19,7 @@ use hp_store::SessionStore;
 use hp_teams::{Advance, Hold, PlannedMember};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
 
@@ -146,6 +147,11 @@ struct AppState {
     team: Mutex<Option<TeamRun>>,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
+    /// Where the plugin file is, and what was read from it. Read on first use
+    /// rather than at launch, so a plugin file that is wrong cannot stop the app
+    /// from starting.
+    plugins_path: PathBuf,
+    plugins: Arc<Mutex<Option<hp_mcp::Host>>>,
 }
 
 impl AppState {
@@ -154,6 +160,7 @@ impl AppState {
         integration_dir: PathBuf,
         worktree_dir: PathBuf,
         findings_dir: PathBuf,
+        plugins_path: PathBuf,
         audit: AuditLog,
         workspace: Option<Workspace>,
     ) -> Self {
@@ -169,6 +176,8 @@ impl AppState {
             audit,
             team: Mutex::new(None),
             workspace: Mutex::new(workspace),
+            plugins_path,
+            plugins: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1264,6 +1273,186 @@ fn team_plan(key: String) -> Result<TeamPlan, String> {
     })
 }
 
+/// The plugin file, what is in it, and what is wrong with it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginsView {
+    /// Where the file is, so the UI can say what to edit rather than only that
+    /// something is wrong.
+    path: String,
+    /// Problems with the file itself, which are not the same as a server that
+    /// will not start.
+    problems: Vec<String>,
+    servers: Vec<hp_mcp::PluginView>,
+}
+
+/// The plugin file's text, reading an empty one into place the first time so
+/// there is something to edit rather than a path to guess at.
+fn plugins_text(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, hp_mcp::EMPTY_FILE)?;
+            Ok(hp_mcp::EMPTY_FILE.to_string())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Load the plugin file, resolving commands the way panes resolve an agent's
+/// program: on Windows an npm-installed server is a `.cmd` shim, which the
+/// process API will not start by name.
+fn load_plugins(path: &Path) -> Result<hp_mcp::Host, String> {
+    let text = plugins_text(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    hp_mcp::Host::load(&text, hp_agents::spawn_argv).map_err(|error| error.to_string())
+}
+
+/// Run something against the plugins, reading the file first if nothing has.
+fn with_plugins<T>(
+    plugins: &Mutex<Option<hp_mcp::Host>>,
+    path: &Path,
+    work: impl FnOnce(&mut hp_mcp::Host) -> T,
+) -> Result<T, String> {
+    let mut guard = plugins.lock();
+    if guard.is_none() {
+        *guard = Some(load_plugins(path)?);
+    }
+    let host = guard.as_mut().expect("just loaded");
+    Ok(work(host))
+}
+
+fn plugins_view(path: &Path, host: &hp_mcp::Host) -> PluginsView {
+    PluginsView {
+        path: path.display().to_string(),
+        problems: host.problems().to_vec(),
+        servers: host.views(),
+    }
+}
+
+/// One line for the log about what a call did.
+fn describe_call(called: &hp_mcp::Called) -> String {
+    match called {
+        hp_mcp::Called::Done(result) => {
+            let mut said = format!("returned {} text part(s)", result.text.len());
+            if result.is_error {
+                said.push_str(", reporting a failure of its own");
+            }
+            if !result.other.is_empty() {
+                said.push_str(&format!(
+                    ", and {} part(s) this build does not render",
+                    result.other.len()
+                ));
+            }
+            said
+        }
+        hp_mcp::Called::NeedsInput { asked } => {
+            format!("asked for input first ({})", asked.join(", "))
+        }
+    }
+}
+
+/// What the plugin file declares, and what each plugin is doing.
+#[tauri::command]
+fn plugins_list(state: State<'_, AppState>) -> Result<PluginsView, String> {
+    with_plugins(&state.plugins, &state.plugins_path, |host| {
+        plugins_view(&state.plugins_path, host)
+    })
+}
+
+/// Read the plugin file again, ending every server that was started from it.
+///
+/// This is what clears a remembered failure: the reason it is remembered at all
+/// is that retrying costs a startup wait, and a person editing the file is the
+/// thing that changes the answer.
+#[tauri::command]
+fn plugins_reload(state: State<'_, AppState>) -> Result<PluginsView, String> {
+    let mut guard = state.plugins.lock();
+    if let Some(mut host) = guard.take() {
+        host.shutdown();
+    }
+    *guard = Some(load_plugins(&state.plugins_path)?);
+    let host = guard.as_ref().expect("just loaded");
+    Ok(plugins_view(&state.plugins_path, host))
+}
+
+/// Start a plugin and say what it offers.
+///
+/// Starting a server installed through a package manager can take a minute the
+/// first time, so this runs off the main thread: the window must not wait for a
+/// program the app does not own.
+#[tauri::command]
+async fn plugins_open(id: String, state: State<'_, AppState>) -> Result<PluginsView, String> {
+    let plugins = Arc::clone(&state.plugins);
+    let path = state.plugins_path.clone();
+    let audit = state.audit.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<PluginsView, String> {
+        let log = AuditLog::new(&audit);
+        let opened = with_plugins(&plugins, &path, |host| {
+            host.open(&id).map_err(|error| error.to_string())
+        })?;
+
+        match opened {
+            Ok(view) => {
+                let said = view.peer.clone().unwrap_or_else(|| view.command.clone());
+                let _ = log.append(&AuditEntry::new("plugin.open", format!("{id}: {said}")));
+                with_plugins(&plugins, &path, |host| plugins_view(&path, host))
+            }
+            Err(error) => {
+                let _ = log.append(&AuditEntry::new("plugin.refused", format!("{id}: {error}")));
+                Err(error)
+            }
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Call one tool on one plugin.
+///
+/// The arguments are deliberately not written to the log: they can hold a token
+/// or a path that is nobody else's business, and what the log is for is knowing
+/// which tool ran and how it went.
+#[tauri::command]
+async fn plugins_call(
+    id: String,
+    tool: String,
+    arguments: Value,
+    state: State<'_, AppState>,
+) -> Result<hp_mcp::Called, String> {
+    let plugins = Arc::clone(&state.plugins);
+    let path = state.plugins_path.clone();
+    let audit = state.audit.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<hp_mcp::Called, String> {
+        let log = AuditLog::new(&audit);
+        let called = with_plugins(&plugins, &path, |host| {
+            host.call(&id, &tool, arguments)
+                .map_err(|error| error.to_string())
+        })?;
+
+        match called {
+            Ok(called) => {
+                let _ = log.append(&AuditEntry::new(
+                    "plugin.call",
+                    format!("{id}: {tool} {}", describe_call(&called)),
+                ));
+                Ok(called)
+            }
+            Err(error) => {
+                let _ = log.append(&AuditEntry::new(
+                    "plugin.refused",
+                    format!("{id}: {tool} {error}"),
+                ));
+                Err(error)
+            }
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Where a pane's shell last said it was, if it reports that at all.
 #[tauri::command]
 fn pane_cwd(id: String, state: State<'_, AppState>) -> Option<String> {
@@ -1314,6 +1503,7 @@ pub fn run() {
                 directory.join("integration"),
                 directory.join("worktrees"),
                 directory.join("findings"),
+                directory.join("plugins.json"),
                 AuditLog::new(directory.join("audit.log")),
                 session.workspace,
             ));
@@ -1339,6 +1529,10 @@ pub fn run() {
             agent_worktree,
             agent_open,
             audit_path,
+            plugins_list,
+            plugins_reload,
+            plugins_open,
+            plugins_call,
             teams_list,
             team_plan,
             team_start,
@@ -1355,6 +1549,11 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.panes.shutdown();
+                    // Ending a plugin is asked for first and forced after a
+                    // moment, so a server that would have exited does.
+                    if let Some(mut host) = state.plugins.lock().take() {
+                        host.shutdown();
+                    }
                 }
             }
         })

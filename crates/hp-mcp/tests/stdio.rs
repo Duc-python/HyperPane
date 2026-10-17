@@ -210,7 +210,7 @@ fn a_tool_that_wants_input_says_which_fields_it_wants() {
     let mut server = start("modern");
 
     match server.call("asks", json!({})).expect("a result") {
-        Called::NeedsInput(asked) => assert_eq!(asked, ["github_login"]),
+        Called::NeedsInput { asked } => assert_eq!(asked, ["github_login"]),
         other => panic!("expected a request for input, got {other:?}"),
     }
 }

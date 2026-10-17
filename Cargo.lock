@@ -1613,6 +1613,7 @@ version = "0.1.0"
 dependencies = [
  "hp-agents",
  "hp-core",
+ "hp-mcp",
  "hp-pty",
  "hp-shell",
  "hp-store",

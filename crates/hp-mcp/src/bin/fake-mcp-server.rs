@@ -80,6 +80,12 @@ fn main() {
             return;
         }
 
+        if mode == "dies-on-call" && method == "tools/call" {
+            // Something to be remembered by, then gone.
+            eprintln!("goodbye");
+            return;
+        }
+
         let mut reply = match method.as_str() {
             "server/discover" => match mode.as_str() {
                 "legacy" => error(id, -32601, "Method not found: server/discover"),
@@ -234,6 +240,12 @@ fn main() {
             // probe is answered properly, so the server starts and then goes
             // wrong, which is the case worth catching.
             reply["id"] = wrong_id;
+        }
+
+        // A mark that this process answered its opening question, so a caller
+        // can tell one start from two.
+        if method == "server/discover" || method == "initialize" {
+            eprintln!("ready");
         }
 
         let mut out = std::io::stdout();

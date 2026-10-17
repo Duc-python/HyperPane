@@ -26,6 +26,10 @@
 //! that a server which stops answering can be given up on instead of hanging the
 //! app that started it.
 
+pub mod host;
+
+pub use host::{Host, Plugin, PluginError, PluginFile, PluginView, ToolView, EMPTY_FILE};
+
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -136,7 +140,8 @@ impl Tool {
 }
 
 /// What a tool call produced.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolResult {
     /// The tool ran and reported a failure of its own. This is a result, not a
     /// protocol error: the server is working and is telling the caller what
@@ -152,13 +157,16 @@ pub struct ToolResult {
 }
 
 /// The outcome of a call.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Called {
     Done(ToolResult),
     /// The server needs input before it can finish. This build cannot collect
     /// it yet, so it reports what was asked for instead of pretending the call
     /// completed.
-    NeedsInput(Vec<String>),
+    NeedsInput {
+        asked: Vec<String>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -383,7 +391,7 @@ impl Server {
                 .as_object()
                 .map(|requests| requests.keys().cloned().collect())
                 .unwrap_or_default();
-            return Ok(Called::NeedsInput(asked));
+            return Ok(Called::NeedsInput { asked });
         }
 
         let mut text = Vec::new();

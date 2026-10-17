@@ -95,10 +95,12 @@ green (tests, clippy, typecheck, and the app actually running).
       followed, and refusals, junk on stdout, silence, wrong ids, oversized
       messages and a server that will not exit all reported for what they are.
       Tested against a scripted server and against a real one.
-- [ ] The app side: `plugins.json` for which servers to run, `plugins_list` and
-      `plugins_call`, and one audit line per call. Note that a server installed
-      through npm is a `.cmd` shim, which the process API will not start by
-      name: the app layer resolves it exactly as `pane_spawn` does.
+- [x] The app side: `plugins.json` for which servers to run, `plugins_list`,
+      `plugins_open`, `plugins_reload` and `plugins_call`, and one audit line per
+      open and per call. A plugin is started on first use, kept afterwards, and a
+      failure is remembered as a reason rather than retried as a wait. The panel
+      takes JSON arguments and shows the tool's own schema: a form can come later,
+      once a schema is worth rendering.
 - [ ] Plugin SDK + signed manifest.
 - [ ] A frontend test harness. The activity log is what stands in for one today,
       and the pane-session bug was found by reading it — which is a poor
