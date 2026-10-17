@@ -300,6 +300,7 @@ fn pane_spawn(
     }
 
     let pane_id = spec.id.clone();
+    let audit_id = spec.id.clone();
     if spec.agent.is_some() {
         state.runs.lock().insert(
             pane_id.clone(),
@@ -340,7 +341,11 @@ fn pane_spawn(
         // A closed window means the webview is gone; dropping the event is fine.
         let _ = on_event.send(event);
     });
-    state.panes.spawn(spec, sink).map_err(|e| e.to_string())
+    state.panes.spawn(spec, sink).map_err(|e| e.to_string())?;
+    let _ = state
+        .audit
+        .append(&AuditEntry::new("pane.open", "opened a pane").for_pane(audit_id));
+    Ok(())
 }
 
 #[tauri::command]
@@ -360,6 +365,13 @@ fn pane_resize(id: String, cols: u16, rows: u16, state: State<'_, AppState>) -> 
 fn pane_close(id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.runs.lock().remove(&id);
     state.directories.lock().remove(&id);
+    // Recorded because a pane that vanishes should be explainable afterwards:
+    // the frontend asks for this when a terminal unmounts, and a pane that
+    // unmounts and never comes back looks exactly like a shell that died.
+    let _ = state.audit.append(
+        &AuditEntry::new("pane.close", "the frontend asked to close this pane")
+            .for_pane(id.clone()),
+    );
     state.panes.kill(&id).map_err(|e| e.to_string())
 }
 
