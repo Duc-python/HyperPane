@@ -27,6 +27,10 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Command duration from the `C` mark, for shells that emit one
       (bash does, through `PS0`)
 - [x] Jump to the previous or next prompt in the scrollback
+- [x] A pane's shell and scrollback survive a layout change. A session lives
+      outside the view that draws it, so splitting a pane no longer restarts the
+      pane beside it. Do not put a PTY back inside a component: the element tree
+      mirrors the layout tree, so a split unmounts and remounts panes.
 - [ ] PowerShell command duration: needs a PSReadLine Enter handler, which
       replaces a key people rely on. Not shipped while it cannot be verified.
 - [ ] Profile editor in the UI (the model and persistence are in place)
