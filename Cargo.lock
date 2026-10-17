@@ -1497,6 +1497,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hp-teams"
+version = "0.1.0"
+dependencies = [
+ "hp-agents",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
