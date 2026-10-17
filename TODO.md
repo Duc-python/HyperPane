@@ -65,10 +65,15 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Briefs: five parts, ending in the line the app reads back
 - [x] Start the first wave, each member through the same reservation as a
       palette run
-- [ ] Advance to the next wave when a wave finishes
-- [ ] Gates: stop at `humanPlan`, `checkerPass` and `humanCommit`
+- [x] Advance to the next wave when a wave finishes, decided in the app and
+      asked for by the frontend
+- [x] Gates: `humanPlan` is the Start button, `checkerPass` and `humanCommit`
+      put a hold on screen with a button
 - [ ] Router: pick an agent for a task rather than following the preference list
-- [ ] Team run view: a wave timeline with live status
+- [ ] Team run view: a wave timeline with live status, rather than one line in
+      the header and a bar when a hold is up
+- [ ] Run the checkers' findings past the person before the next wave opens,
+      rather than only saying the checkers finished
 
 ## P4 — plugins
 
