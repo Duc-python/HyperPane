@@ -26,6 +26,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # tauri-build reads frontendDist at compile time and fails when the
+      # directory is absent. dist/ is generated, so it has to exist before any
+      # cargo command that compiles the app crate.
+      - name: Build frontend
+        run: pnpm --filter @hyperpane/desktop build
+
       - name: Install Linux webview dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -34,9 +51,14 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            libxdo-dev \
             patchelf \
             build-essential \
             curl wget file libssl-dev
+
+      # Windows needs the Windows SDK, not just the C++ tools: kernel32.lib
+      # comes from the SDK and linking fails without it. GitHub's windows
+      # images ship both.
 
       - name: Format
         run: cargo fmt --all --check
