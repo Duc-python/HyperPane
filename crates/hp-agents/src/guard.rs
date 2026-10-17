@@ -88,21 +88,38 @@ impl SpawnGuard {
         self.limits
     }
 
-    /// Ask to start a run, given how many agent panes are alive.
-    ///
-    /// A refusal changes nothing. An approval is recorded, so the rate limit
-    /// counts attempts that were allowed and not ones that were rejected.
+    /// Ask to start one run.
     pub fn request(&mut self, live_panes: usize, now: Instant) -> Result<(), Refusal> {
+        self.reserve(live_panes, 1, now)
+    }
+
+    /// Ask to start `count` runs at once.
+    ///
+    /// All or nothing, and that is the point: a wave that needs four panes must
+    /// not spend two of its allowance and then be refused, because the next
+    /// attempt would then fail for a reason the person never caused.
+    pub fn reserve(
+        &mut self,
+        live_panes: usize,
+        count: usize,
+        now: Instant,
+    ) -> Result<(), Refusal> {
         self.forget_old(now);
 
-        if live_panes >= self.limits.max_live_panes {
+        if count == 0 {
+            return Ok(());
+        }
+
+        // Every run in the batch adds a live pane, so the whole batch has to
+        // fit rather than the first one.
+        if live_panes + count > self.limits.max_live_panes {
             return Err(Refusal::TooManyPanes {
                 live: live_panes,
                 limit: self.limits.max_live_panes,
             });
         }
 
-        if self.recent.len() >= self.limits.max_spawns_per_window {
+        if self.recent.len() + count > self.limits.max_spawns_per_window {
             let oldest = self.recent.front().copied().unwrap_or(now);
             let frees_at = oldest + self.limits.window;
             let retry_in = frees_at.saturating_duration_since(now);
@@ -113,7 +130,9 @@ impl SpawnGuard {
             });
         }
 
-        self.recent.push_back(now);
+        for _ in 0..count {
+            self.recent.push_back(now);
+        }
         Ok(())
     }
 
@@ -219,6 +238,53 @@ mod tests {
             assert!(guard.request(0, now).is_ok(), "step {step}");
         }
         assert!(guard.recent.len() <= guard.limits().max_spawns_per_window);
+    }
+
+    #[test]
+    fn a_batch_is_refused_whole_rather_than_in_part() {
+        let mut guard = SpawnGuard::new(Limits {
+            max_live_panes: 10,
+            max_spawns_per_window: 5,
+            window: Duration::from_secs(60),
+        });
+        let now = Instant::now();
+
+        // Four already started, a wave of two: the wave does not fit, and the
+        // one slot that would have fitted must not be spent on it.
+        for _ in 0..4 {
+            assert!(guard.request(0, now).is_ok());
+        }
+        assert!(guard.reserve(0, 2, now).is_err());
+
+        // One slot remains, and it is still there to be used.
+        assert!(guard.request(0, now).is_ok());
+        assert!(guard.request(0, now).is_err());
+    }
+
+    #[test]
+    fn a_batch_that_fits_is_recorded_in_full() {
+        let mut guard = guard(); // two per window
+        let now = Instant::now();
+
+        assert_eq!(guard.reserve(0, 2, now), Ok(()));
+        // Both slots are used, so nothing is left.
+        assert!(guard.request(0, now).is_err());
+    }
+
+    #[test]
+    fn a_batch_that_would_overfill_the_live_panes_is_refused_with_the_numbers() {
+        let mut guard = guard(); // live limit is three
+        let refusal = guard.reserve(2, 2, Instant::now()).expect_err("refused");
+        assert_eq!(refusal, Refusal::TooManyPanes { live: 2, limit: 3 });
+    }
+
+    #[test]
+    fn reserving_nothing_is_allowed_and_records_nothing() {
+        let mut guard = guard();
+        let now = Instant::now();
+        assert_eq!(guard.reserve(0, 0, now), Ok(()));
+        assert!(guard.request(0, now).is_ok());
+        assert!(guard.request(0, now).is_ok());
     }
 
     #[test]

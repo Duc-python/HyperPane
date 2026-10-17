@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { teamPlan, type Gate, type TeamPlan } from "../lib/ipc";
 
 interface TeamPlanPanelProps {
   teamKey: string;
+  /** Ask the app to start the first wave. App decides whether it can. */
+  onStart: (task: string) => void;
   onClose: () => void;
 }
 
@@ -24,14 +26,17 @@ const KIND_NOTE: Record<string, string> = {
  * A preview and nothing more: no pane is opened and no process is started by
  * looking at this. That is the whole point of showing it.
  */
-export function TeamPlanPanel({ teamKey, onClose }: TeamPlanPanelProps) {
+export function TeamPlanPanel({ teamKey, onStart, onClose }: TeamPlanPanelProps) {
   const [plan, setPlan] = useState<TeamPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [task, setTask] = useState("");
+  const taskRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setPlan(null);
     setError(null);
+    setTask("");
     void teamPlan(teamKey)
       .then((loaded) => {
         if (!cancelled) setPlan(loaded);
@@ -48,6 +53,20 @@ export function TeamPlanPanel({ teamKey, onClose }: TeamPlanPanelProps) {
     plan?.waves
       .flatMap((wave) => wave.members)
       .filter((member) => member.kind !== "leader").length ?? 0;
+
+  // The task is the only thing to do here, so it takes the keyboard as soon as
+  // the plan is readable. Enter then starts the run.
+  useEffect(() => {
+    if (plan) taskRef.current?.focus();
+  }, [plan]);
+
+  // The run begins at the first wave holding a member that is not a leader:
+  // the leader is the pane the person is already in.
+  const firstWave = plan?.waves
+    .filter((wave) => wave.members.some((member) => member.kind !== "leader"))
+    .map((wave) => wave.wave)[0];
+
+  const canStart = plan !== null && plan.refusal === null && firstWave !== undefined;
 
   return (
     <div
@@ -156,6 +175,38 @@ export function TeamPlanPanel({ teamKey, onClose }: TeamPlanPanelProps) {
             </>
           )}
         </div>
+
+        <footer className="flex shrink-0 items-center gap-2 border-t border-line px-4 py-3">
+          <input
+            ref={taskRef}
+            value={task}
+            onChange={(event) => setTask(event.target.value)}
+            placeholder="What should this run do? Leave empty to just open the panes."
+            aria-label="Task"
+            className="min-w-0 flex-1 rounded border border-line bg-base px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-line-strong"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && canStart) {
+                event.preventDefault();
+                onStart(task);
+              }
+            }}
+          />
+          <button
+            type="button"
+            disabled={!canStart}
+            onClick={() => onStart(task)}
+            title={
+              plan?.refusal
+                ? plan.refusal
+                : firstWave === undefined
+                  ? "Every role in this team is a leader, so there is nothing to open."
+                  : undefined
+            }
+            className="shrink-0 rounded border border-accent-strong bg-accent-soft px-2.5 py-1 text-[11px] text-ink transition-colors hover:border-accent disabled:pointer-events-none disabled:opacity-40"
+          >
+            {firstWave === undefined ? "nothing to start" : `Start wave ${firstWave}`}
+          </button>
+        </footer>
       </div>
     </div>
   );

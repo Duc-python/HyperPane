@@ -59,10 +59,16 @@ green (tests, clippy, typecheck, and the app actually running).
 
 ## P3 — teams
 
-- [ ] Preset loader with schema validation
-- [ ] Run engine: waves, gates, roles, stop conditions
-- [ ] Router: pick an agent for a task
-- [ ] Team run view: wave timeline, live status, gates as checkpoints
+- [x] Preset loader with schema validation and problems that serde cannot see
+- [x] Plan a run: waves, roles, agent preference, refusal with the names tried
+- [x] Preview a plan before anything runs
+- [x] Briefs: five parts, ending in the line the app reads back
+- [x] Start the first wave, each member through the same reservation as a
+      palette run
+- [ ] Advance to the next wave when a wave finishes
+- [ ] Gates: stop at `humanPlan`, `checkerPass` and `humanCommit`
+- [ ] Router: pick an agent for a task rather than following the preference list
+- [ ] Team run view: a wave timeline with live status
 
 ## P4 — plugins
 

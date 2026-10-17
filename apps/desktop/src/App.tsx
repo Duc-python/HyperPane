@@ -17,7 +17,9 @@ import {
   sessionLoad,
   sessionPath,
   sessionSave,
+  teamPlan,
   teamsList,
+  teamStart,
   workspaceClosePane,
   workspaceCycleFocus,
   workspaceInit,
@@ -276,6 +278,68 @@ export default function App() {
     (path: string) => shortenPath(path, info?.homeDir ?? null),
     [info],
   );
+
+  /**
+   * Open the first wave of a team.
+   *
+   * The frontend works out how many panes the wave needs from the same plan
+   * the person just read, allocates the ids, and hands them over. The app
+   * checks the count and refuses a mismatch rather than opening part of a wave.
+   */
+  const startTeam = useCallback(async (key: string, task: string) => {
+    const current = workspaceRef.current;
+    if (!current) return;
+    const target = current.focused ?? paneIds(current.layout)[0];
+    if (!target) return;
+
+    try {
+      const plan = await teamPlan(key);
+      const spawnable = plan.waves
+        .flatMap((wave) => wave.members)
+        .filter((member) => member.kind !== "leader");
+      if (spawnable.length === 0) {
+        throw new Error("this team has nothing to spawn: every role is a leader");
+      }
+
+      const firstWave = Math.min(...spawnable.map((member) => member.wave));
+      const waveMembers = spawnable.filter((member) => member.wave === firstWave);
+      const ids = waveMembers.map(() => `p${nextPane.current++}`);
+
+      const started = await teamStart({
+        key,
+        task,
+        panes: ids,
+        repo: await paneCwd(target),
+      });
+
+      setPaneAgents((map) => {
+        const next = { ...map };
+        for (const member of started.members) {
+          next[member.pane] = {
+            id: member.agent,
+            label: member.label,
+            program: member.program,
+            args: member.args,
+            needsPaste: member.needsPaste,
+            cwd: member.cwd,
+            branch: member.branch,
+          };
+        }
+        return next;
+      });
+
+      // Every member splits from the pane the person is in, so the wave lands
+      // beside it rather than nesting into the last member opened.
+      let workspace = current;
+      for (const member of started.members) {
+        workspace = await workspaceSplit(target, "row", member.pane);
+      }
+      setWorkspace(workspace);
+      setTeamKey(null);
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }, []);
 
   // Live panes, by id, so a command can act on the focused one. Panes register
   // themselves when their terminal exists and clear on the way out.
@@ -573,10 +637,13 @@ export default function App() {
         )}
       </footer>
 
-      <TeamPlanPanel
-        teamKey={teamKey ?? ""}
-        onClose={() => setTeamKey(null)}
-      />
+      {teamKey ? (
+        <TeamPlanPanel
+          teamKey={teamKey}
+          onStart={(task) => void startTeam(teamKey, task)}
+          onClose={() => setTeamKey(null)}
+        />
+      ) : null}
 
       <CommandPalette
         open={paletteOpen}

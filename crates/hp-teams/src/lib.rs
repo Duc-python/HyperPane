@@ -10,6 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod brief;
+
+pub use brief::{write_brief, BriefInput};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

@@ -312,6 +312,46 @@ export const teamsList = () => invoke<TeamPreset[]>("teams_list");
 
 export const teamPlan = (key: string) => invoke<TeamPlan>("team_plan", { key });
 
+export interface TeamStartRequest {
+  key: string;
+  task?: string;
+  /** Pane ids the frontend has allocated, one per member of the wave. */
+  panes: string[];
+  /** The repository a member's worktree is forked from. */
+  repo?: string | null;
+}
+
+export interface StartedMember {
+  pane: string;
+  role: string;
+  label: string;
+  agent: string;
+  readOnly: boolean;
+  branch: string | null;
+  program: string;
+  args: string[];
+  needsPaste: boolean;
+  cwd: string | null;
+}
+
+export interface TeamStart {
+  key: string;
+  title: string;
+  wave: number;
+  members: StartedMember[];
+  /** Waves after this one. */
+  wavesRemaining: number;
+}
+
+/**
+ * Start the first wave of a team that has anything to spawn.
+ *
+ * Every member goes through the same reservation and worktree preparation as a
+ * palette run, so a team is not a way around the app's own limits.
+ */
+export const teamStart = (request: TeamStartRequest) =>
+  invoke<TeamStart>("team_start", { request });
+
 export const agentsAvailable = () => invoke<AgentInfo[]>("agents_available");
 
 export const agentLaunch = (agent: string, task: string) =>

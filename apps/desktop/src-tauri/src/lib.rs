@@ -482,77 +482,83 @@ struct AgentOpen {
 /// This is one call rather than three the UI could interleave or skip. The
 /// limits live here, behind the command, so no amount of UI change can get
 /// around them.
-#[tauri::command]
-fn agent_open(request: AgentOpenRequest, state: State<'_, AppState>) -> Result<AgentOpen, String> {
-    let spec = hp_agents::by_id(&request.agent).ok_or_else(|| {
+/// Reserve `count` runs against the app's limits, all or nothing.
+fn reserve_runs(state: &AppState, count: usize) -> Result<(), String> {
+    let live = state.runs.lock().len();
+    state
+        .guard
+        .lock()
+        .reserve(live, count, Instant::now())
+        .map_err(|refusal| refusal.message())
+}
+
+/// Create a worktree for one run and record it.
+fn prepare_worktree(
+    state: &AppState,
+    pane: &str,
+    agent_id: &str,
+    repo: &str,
+    seed: &str,
+) -> Result<hp_agents::worktree::Worktree, String> {
+    let branch = hp_agents::worktree::branch_name(seed);
+    let created = hp_agents::worktree::create(Path::new(repo), &state.worktree_dir, &branch)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .audit
+        .append(
+            &AuditEntry::new(
+                "worktree.create",
+                format!("{} at {}", created.branch, created.path.display()),
+            )
+            .for_agent(agent_id.to_string())
+            .for_pane(pane.to_string()),
+        )
+        .map_err(|error| error.to_string())?;
+
+    Ok(created)
+}
+
+/// Everything after the slot is held and the worktree exists.
+///
+/// Split out so a team can prepare a member's worktree first and then name it
+/// in the member's brief: a brief that tells an agent where it may write has to
+/// know the answer before it is written.
+fn open_reserved(
+    state: &AppState,
+    pane: &str,
+    agent_id: &str,
+    task: &str,
+    worktree: Option<&hp_agents::worktree::Worktree>,
+) -> Result<AgentOpen, String> {
+    let spec = hp_agents::by_id(agent_id).ok_or_else(|| {
         format!(
-            "unknown agent {}; known ids are {}",
-            request.agent,
+            "unknown agent {agent_id}; known ids are {}",
             hp_agents::known_ids().join(", ")
         )
     })?;
 
-    // The guard runs before anything exists, so a refusal leaves nothing
-    // behind to clean up.
-    let live = state.runs.lock().len();
-    if let Err(refusal) = state.guard.lock().request(live, Instant::now()) {
-        let message = refusal.message();
-        let _ = state.audit.append(
-            &AuditEntry::new("agent.refused", message.clone())
-                .for_agent(spec.id.to_string())
-                .for_pane(request.pane.clone()),
-        );
-        return Err(message);
-    }
-
-    let worktree = if request.worktree {
-        let repo = request.repo.clone().ok_or_else(|| {
-            "a worktree needs a repository, and that pane has not reported a \
-             directory yet: run a command in it first"
-                .to_string()
-        })?;
-
-        let branch =
-            hp_agents::worktree::branch_name(&format!("{}:{}", request.pane, request.task));
-        let created = hp_agents::worktree::create(Path::new(&repo), &state.worktree_dir, &branch)
-            .map_err(|error| error.to_string())?;
-
-        state
-            .audit
-            .append(
-                &AuditEntry::new(
-                    "worktree.create",
-                    format!("{} at {}", created.branch, created.path.display()),
-                )
-                .for_agent(spec.id.to_string())
-                .for_pane(request.pane.clone()),
-            )
-            .map_err(|error| error.to_string())?;
-
-        Some(created)
-    } else {
-        None
-    };
-
-    let (program, args) = spec.launch(&request.task);
+    let (program, args) = spec.launch(task);
     let (program, args) = hp_agents::spawn_argv(program, &args);
 
-    let detail = if request.task.trim().is_empty() {
-        format!("opened {}", spec.label)
-    } else {
-        format!("opened {} with a task", spec.label)
-    };
     state
         .audit
         .append(
-            &AuditEntry::new("agent.open", detail)
-                .for_agent(spec.id.to_string())
-                .for_pane(request.pane.clone()),
+            &AuditEntry::new(
+                "agent.open",
+                if task.trim().is_empty() {
+                    format!("opened {}", spec.label)
+                } else {
+                    format!("opened {} with a task", spec.label)
+                },
+            )
+            .for_agent(spec.id.to_string())
+            .for_pane(pane.to_string()),
         )
         .map_err(|error| error.to_string())?;
 
     state.runs.lock().insert(
-        request.pane.clone(),
+        pane.to_string(),
         RunState {
             agent: Some(spec.id.to_string()),
             started_at: Some(Instant::now()),
@@ -565,10 +571,228 @@ fn agent_open(request: AgentOpenRequest, state: State<'_, AppState>) -> Result<A
         program,
         args,
         needs_paste: spec.needs_paste(),
-        cwd: worktree
+        cwd: worktree.map(|worktree| worktree.path.display().to_string()),
+        branch: worktree.map(|worktree| worktree.branch.clone()),
+    })
+}
+
+/// Open one run: reserve its slot, prepare its worktree, then start it.
+fn open_run(
+    state: &AppState,
+    pane: &str,
+    agent_id: &str,
+    task: &str,
+    repo: Option<&str>,
+) -> Result<AgentOpen, String> {
+    // The guard runs before anything exists, so a refusal leaves nothing
+    // behind to clean up.
+    if let Err(message) = reserve_runs(state, 1) {
+        let _ = state.audit.append(
+            &AuditEntry::new("agent.refused", message.clone())
+                .for_agent(agent_id.to_string())
+                .for_pane(pane.to_string()),
+        );
+        return Err(message);
+    }
+
+    let worktree = match repo {
+        Some(repo) => Some(prepare_worktree(
+            state,
+            pane,
+            agent_id,
+            repo,
+            &format!("{pane}:{task}"),
+        )?),
+        None => None,
+    };
+
+    open_reserved(state, pane, agent_id, task, worktree.as_ref())
+}
+
+#[tauri::command]
+fn agent_open(request: AgentOpenRequest, state: State<'_, AppState>) -> Result<AgentOpen, String> {
+    let repo = if request.worktree {
+        request.repo.as_deref()
+    } else {
+        None
+    };
+
+    if request.worktree && repo.is_none() {
+        return Err(
+            "a worktree needs a repository, and that pane has not reported a \
+             directory yet: run a command in it first"
+                .to_string(),
+        );
+    }
+
+    open_run(&state, &request.pane, &request.agent, &request.task, repo)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamStartRequest {
+    key: String,
+    #[serde(default)]
+    task: String,
+    /// Pane ids the frontend has allocated, one per member of the wave.
+    panes: Vec<String>,
+    /// The repository a member's worktree is forked from, when one is wanted.
+    #[serde(default)]
+    repo: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartedMember {
+    pane: String,
+    role: String,
+    label: String,
+    agent: String,
+    read_only: bool,
+    branch: Option<String>,
+    program: String,
+    args: Vec<String>,
+    needs_paste: bool,
+    cwd: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamStart {
+    key: String,
+    title: String,
+    wave: u32,
+    members: Vec<StartedMember>,
+    /// Waves after this one, so the UI can say what is still to come.
+    waves_remaining: usize,
+}
+
+/// Start the first wave of a team that has anything to spawn.
+///
+/// The leader is the pane the person is already in, so a run begins at the
+/// first wave holding a member that is not one. Every member goes through the
+/// same reservation and the same worktree preparation as a palette run, which
+/// is what stops a team from being a way around the app's own limits.
+#[tauri::command]
+fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<TeamStart, String> {
+    let file = hp_teams::PresetFile::parse(hp_teams::SHIPPED).map_err(|e| e.to_string())?;
+    let preset = file
+        .team(&request.key)
+        .ok_or_else(|| format!("no team called {}", request.key))?;
+
+    let planned = hp_teams::plan(preset, &installed_agents()).map_err(|e| e.to_string())?;
+
+    let spawnable = |member: &&hp_teams::PlannedMember| member.kind != hp_teams::RoleKind::Leader;
+
+    let Some(wave) = planned
+        .iter()
+        .filter(spawnable)
+        .map(|member| member.wave)
+        .min()
+    else {
+        return Err(format!(
+            "{} has nothing to spawn: every role is a leader",
+            preset.title_en()
+        ));
+    };
+
+    let members: Vec<&hp_teams::PlannedMember> = planned
+        .iter()
+        .filter(|member| member.wave == wave && spawnable(member))
+        .collect();
+
+    if request.panes.len() != members.len() {
+        return Err(format!(
+            "wave {wave} opens {} panes and {} were allocated",
+            members.len(),
+            request.panes.len()
+        ));
+    }
+
+    // The whole wave is reserved before any of it starts, so a refusal costs
+    // nothing rather than leaving half a wave running.
+    if let Err(message) = reserve_runs(&state, members.len()) {
+        let _ = state.audit.append(
+            &AuditEntry::new("team.refused", message.clone()).for_agent(preset.key.clone()),
+        );
+        return Err(message);
+    }
+
+    let mut started = Vec::new();
+    for (member, pane) in members.iter().zip(request.panes.iter()) {
+        let worktree = if member.worktree {
+            let repo = request.repo.as_deref().ok_or_else(|| {
+                format!(
+                    "role {} wants its own worktree and no repository was given",
+                    member.label
+                )
+            })?;
+            Some(prepare_worktree(
+                &state,
+                pane,
+                &member.agent,
+                repo,
+                &format!("{pane}:{}", member.role),
+            )?)
+        } else {
+            None
+        };
+
+        let worktree_path = worktree
             .as_ref()
-            .map(|worktree| worktree.path.display().to_string()),
-        branch: worktree.map(|worktree| worktree.branch),
+            .map(|worktree| worktree.path.display().to_string());
+
+        let brief = hp_teams::write_brief(&hp_teams::BriefInput {
+            team: &preset.title_en(),
+            purpose: &preset.purpose_en(),
+            role_label: &member.label,
+            focus: &member.focus,
+            task: &request.task,
+            read_only: member.read_only,
+            worktree: worktree_path.as_deref(),
+            wave: member.wave,
+        });
+
+        let opened = open_reserved(&state, pane, &member.agent, &brief, worktree.as_ref())?;
+
+        started.push(StartedMember {
+            pane: pane.clone(),
+            role: member.role.clone(),
+            label: member.label.clone(),
+            agent: member.agent.clone(),
+            read_only: member.read_only,
+            branch: opened.branch,
+            program: opened.program,
+            args: opened.args,
+            needs_paste: opened.needs_paste,
+            cwd: opened.cwd,
+        });
+    }
+
+    let waves_remaining = planned
+        .iter()
+        .filter(|member| member.wave > wave && member.kind != hp_teams::RoleKind::Leader)
+        .map(|member| member.wave)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+
+    let _ = state.audit.append(
+        &AuditEntry::new(
+            "team.start",
+            format!(
+                "wave {wave}: {} member(s), {waves_remaining} wave(s) left",
+                started.len()
+            ),
+        )
+        .for_agent(preset.key.clone()),
+    );
+
+    Ok(TeamStart {
+        key: preset.key.clone(),
+        title: preset.title_en(),
+        wave,
+        members: started,
+        waves_remaining,
     })
 }
 
@@ -747,6 +971,7 @@ pub fn run() {
             audit_path,
             teams_list,
             team_plan,
+            team_start,
             pane_run_state,
             pane_cwd,
             session_load,
