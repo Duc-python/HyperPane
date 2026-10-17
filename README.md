@@ -47,9 +47,22 @@ hyperpane/
 
 - **Node 20+** and **pnpm 9+**
 - **Rust stable** (`rustup`) — Tauri backend
-- **Windows**: MSVC build tools (Visual Studio 2022 Build Tools, C++ workload) + WebView2 runtime
+- **Windows**: Visual Studio Build Tools with the C++ workload **and the
+  Windows SDK**. The C++ tools alone are not enough: linking fails with
+  `LNK1181: cannot open input file 'kernel32.lib'`, because `kernel32.lib`
+  comes from the SDK, which is a separate component.
+  WebView2 is present on current Windows; older installs need the runtime.
 - **macOS**: Xcode command line tools
 - **Linux**: `webkit2gtk-4.1`, `libayatana-appindicator3`, `librsvg2`, `libssl`, `build-essential`
+
+On Windows, Rust's MSVC target needs `link.exe` on `PATH`, which an ordinary
+shell does not have. `scripts/with-msvc.ps1` finds the Visual Studio
+installation, imports the environment `vcvars64.bat` sets, and runs a command
+inside it:
+
+```powershell
+pwsh -File scripts/with-msvc.ps1 -- cargo test --workspace
+```
 
 ## Develop
 
@@ -57,6 +70,17 @@ hyperpane/
 pnpm install
 pnpm dev            # frontend only (Vite)
 pnpm tauri dev      # full desktop app
+```
+
+```powershell
+# Windows: run cargo through the Visual Studio environment
+pwsh -File scripts/with-msvc.ps1 -- cargo test -p hp-pty -p hp-core -p hp-agents
+```
+
+Icons are generated, not committed as opaque art:
+
+```powershell
+pwsh -File scripts/make-icons.ps1
 ```
 
 ## Roadmap
