@@ -77,6 +77,26 @@ impl RunState {
     }
 }
 
+/// What a member reported about its own work.
+///
+/// Recorded while the pane is alive and kept after it closes, because a person
+/// reading a hold wants to know what the checkers said, and the checkers' panes
+/// are usually gone by then.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemberClaim {
+    wave: u32,
+    pane: String,
+    role: String,
+    label: String,
+    agent: String,
+    /// The child's own last `RESULT` line, if it printed one. A claim about its
+    /// own work, not a fact the app checked.
+    result: Option<RunResult>,
+    /// The process had already ended when this was recorded.
+    finished: bool,
+}
+
 /// A team run the app is keeping track of.
 ///
 /// One at a time, and only while it is going: a run is a sequence of waves and
@@ -92,6 +112,8 @@ struct TeamRun {
     progress: hp_teams::RunState,
     /// Panes opened for the wave in progress.
     panes: Vec<String>,
+    /// What the members of each wave have reported so far.
+    claims: Vec<MemberClaim>,
 }
 
 /// Shared application state. The PTY manager is behind an `Arc` because
@@ -775,6 +797,54 @@ fn open_wave(
     Ok(started)
 }
 
+/// What each pane of a wave has reported, and whether it is still going.
+type WaveReport = HashMap<String, (Option<RunResult>, bool)>;
+
+/// Read a wave's panes once, so the two locks are never held at the same time.
+fn wave_report(runs: &HashMap<String, RunState>, panes: &[String]) -> WaveReport {
+    panes
+        .iter()
+        .map(|pane| {
+            let state = match runs.get(pane) {
+                Some(run) => (run.result.clone(), run.exit.is_some()),
+                // A pane that is gone cannot still be working.
+                None => (None, true),
+            };
+            (pane.clone(), state)
+        })
+        .collect()
+}
+
+/// Record what a wave's members have reported so far.
+///
+/// Rebuilt from the panes each time rather than appended to, so a member that
+/// reports twice ends up with its latest claim instead of two, and a pane that
+/// closed keeps the claim it made before it went.
+fn snapshot_claims(run: &mut TeamRun, report: &WaveReport) {
+    let wave = run.progress.wave;
+    let members: Vec<&PlannedMember> = run
+        .plan
+        .iter()
+        .filter(|member| member.wave == wave)
+        .collect();
+
+    run.claims.retain(|claim| claim.wave != wave);
+
+    for (member, pane) in members.iter().zip(run.panes.iter()) {
+        let (result, finished) = report.get(pane).cloned().unwrap_or((None, true));
+
+        run.claims.push(MemberClaim {
+            wave,
+            pane: pane.clone(),
+            role: member.role.clone(),
+            label: member.label.clone(),
+            agent: member.agent.clone(),
+            result,
+            finished,
+        });
+    }
+}
+
 /// How many of a wave's panes are still alive.
 ///
 /// A pane that is gone counts as not running: a person closing a pane has to
@@ -844,6 +914,7 @@ fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<T
         plan: planned,
         progress,
         panes: request.panes.clone(),
+        claims: Vec::new(),
     });
 
     Ok(TeamStart {
@@ -871,45 +942,48 @@ struct TeamStatus {
     /// How many panes that wave needs.
     next_wave_panes: usize,
     waves_remaining: usize,
+    /// What each member has reported, wave by wave. A claim, not a fact.
+    claims: Vec<MemberClaim>,
 }
 
 /// Where the team run is, without moving it.
 #[tauri::command]
 fn team_status(state: State<'_, AppState>) -> Option<TeamStatus> {
-    // Copied out before anything else is locked, so the two locks are never
-    // held at once and there is no order to get wrong.
-    let (key, title, wave, holding, pending, plan, panes) = {
+    // Which panes matter is read first, so the two locks are never held at once.
+    let panes = {
         let team = state.team.lock();
-        let run = team.as_ref()?;
-        (
-            run.key.clone(),
-            run.title.clone(),
-            run.progress.wave,
-            run.progress.holding(),
-            run.progress.pending.clone(),
-            run.plan.clone(),
-            run.panes.clone(),
-        )
+        team.as_ref()?.panes.clone()
     };
 
-    let running = running_panes(&state.runs.lock(), &panes);
-    let next_wave = pending.first().copied();
+    let report = wave_report(&state.runs.lock(), &panes);
+
+    let mut team = state.team.lock();
+    let run = team.as_mut()?;
+    snapshot_claims(run, &report);
+
+    let running = running_panes(&state.runs.lock(), &run.panes);
+    let next_wave = run.progress.pending.first().copied();
 
     Some(TeamStatus {
-        key,
-        title,
-        wave,
+        key: run.key.clone(),
+        title: run.title.clone(),
+        wave: run.progress.wave,
         running,
-        holding,
-        holding_message: holding.map(|hold| hold.message().to_string()),
+        holding: run.progress.holding(),
+        holding_message: run
+            .progress
+            .holding()
+            .map(|hold| hold.message().to_string()),
         next_wave,
-        next_wave_panes: plan
+        next_wave_panes: run
+            .plan
             .iter()
             .filter(|member| {
                 Some(member.wave) == next_wave && member.kind != hp_teams::RoleKind::Leader
             })
             .count(),
-        waves_remaining: pending.len(),
+        waves_remaining: run.progress.pending.len(),
+        claims: run.claims.clone(),
     })
 }
 
@@ -954,6 +1028,10 @@ fn team_advance(panes: Vec<String>, state: State<'_, AppState>) -> Result<TeamAd
         .clone();
 
     let running = running_panes(&state.runs.lock(), &run.panes);
+    // Recorded here as well as on every status read, so the wave being left
+    // behind keeps its claims even if nobody polled before it finished.
+    let report = wave_report(&state.runs.lock(), &run.panes);
+    snapshot_claims(&mut run, &report);
     let before = run.progress.clone();
 
     let outcome = match run.progress.advance(&preset, &run.plan, running) {

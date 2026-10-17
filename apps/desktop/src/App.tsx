@@ -42,7 +42,7 @@ import {
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
 import { shortenPath } from "./lib/paths";
-import { openPaneAgent, type PaneAgent } from "./lib/agents";
+import { describeResult, openPaneAgent, type PaneAgent } from "./lib/agents";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
@@ -570,6 +570,8 @@ export default function App() {
 
   const paneCount = workspace ? paneIds(workspace.layout).length : 0;
   const canClose = paneCount > 1;
+  const holdingClaims =
+    teamRun?.claims.filter((claim) => claim.wave === teamRun.wave) ?? [];
   const activeProfile = profiles.find(
     (profile) => profile.id === (defaultProfile ?? ""),
   );
@@ -676,13 +678,40 @@ export default function App() {
       ) : null}
 
       {teamRun?.holding ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1.5 text-[11px] text-warn">
-          <span className="font-semibold">{teamRun.title}</span>
-          <span className="truncate">{teamRun.holdingMessage}</span>
+        <div className="flex shrink-0 items-start gap-3 border-b border-warn/40 bg-warn/10 px-3 py-1.5 text-[11px] text-warn">
+          <span className="shrink-0 font-semibold">{teamRun.title}</span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate">{teamRun.holdingMessage}</div>
+            {holdingClaims.length > 0 ? (
+              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+                {holdingClaims.map((claim) => (
+                  <li
+                    key={claim.pane}
+                    className="text-[10px] text-ink-muted"
+                    title={
+                      claim.result
+                        ? `${claim.agent} reported${claim.result.files.length > 0 ? `: ${claim.result.files.join(", ")}` : " no files"}`
+                        : claim.finished
+                          ? `${claim.agent} exited without printing a RESULT line`
+                          : `${claim.agent} is still going`
+                    }
+                  >
+                    <span className="text-accent">{claim.label}</span>
+                    {" · "}
+                    {claim.result
+                      ? describeResult(claim.result)
+                      : claim.finished
+                        ? "no report"
+                        : "still going"}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={() => void confirmTeam()}
-            className="ml-auto shrink-0 rounded border border-warn/50 px-2 py-0.5 transition-colors hover:bg-warn/20"
+            className="shrink-0 rounded border border-warn/50 px-2 py-0.5 transition-colors hover:bg-warn/20"
           >
             continue
           </button>

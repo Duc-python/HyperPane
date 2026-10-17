@@ -72,8 +72,10 @@ green (tests, clippy, typecheck, and the app actually running).
 - [ ] Router: pick an agent for a task rather than following the preference list
 - [ ] Team run view: a wave timeline with live status, rather than one line in
       the header and a bar when a hold is up
-- [ ] Run the checkers' findings past the person before the next wave opens,
-      rather than only saying the checkers finished
+- [x] Show what each member claimed when a wave finishes, and keep it after the
+      pane closes. A member that printed no `RESULT` line reads "no report".
+- [ ] The findings themselves, not just the claim: ask read-only roles to write
+      what they found to a file, and show that on the hold.
 
 ## P4 — plugins
 

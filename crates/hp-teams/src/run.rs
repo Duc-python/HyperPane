@@ -24,8 +24,8 @@ impl Hold {
     pub fn message(self) -> &'static str {
         match self {
             Hold::ChecksReported => {
-                "the checkers have finished. Read what they found before the \
-                 run goes on."
+                "the checkers have finished. What each one claimed is beside it; \
+                 whether that counts as passing is yours to decide."
             }
             Hold::ResultReady => {
                 "the last wave has finished. The result is yours to keep: \

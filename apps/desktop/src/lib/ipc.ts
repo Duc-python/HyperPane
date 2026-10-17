@@ -354,6 +354,18 @@ export const teamStart = (request: TeamStartRequest) =>
 
 export type Hold = "checksReported" | "resultReady";
 
+/** What a member reported about its own work. A claim, not a fact. */
+export interface MemberClaim {
+  wave: number;
+  pane: string;
+  role: string;
+  label: string;
+  agent: string;
+  result: RunResult | null;
+  /** The process had already ended when this was recorded. */
+  finished: boolean;
+}
+
 export interface TeamStatus {
   key: string;
   title: string;
@@ -365,6 +377,8 @@ export interface TeamStatus {
   nextWave: number | null;
   nextWavePanes: number;
   wavesRemaining: number;
+  /** What each member has reported, wave by wave. */
+  claims: MemberClaim[];
 }
 
 export type TeamAdvance =
