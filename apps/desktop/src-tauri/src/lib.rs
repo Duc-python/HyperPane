@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
-use hp_core::{SplitDirection, Workspace};
+use hp_core::{Session, SplitDirection, Workspace};
 use hp_pty::{EventSink, PaneManager, PaneSpec, PtyEvent};
+use hp_store::SessionStore;
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -17,15 +18,17 @@ use tauri::{Manager, State};
 /// channel callbacks outlive the command that created them.
 struct AppState {
     panes: Arc<PaneManager>,
+    store: SessionStore,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(store: SessionStore, workspace: Option<Workspace>) -> Self {
         Self {
             panes: Arc::new(PaneManager::new()),
-            workspace: Mutex::new(None),
+            store,
+            workspace: Mutex::new(workspace),
         }
     }
 
@@ -179,12 +182,48 @@ fn agent_catalogue() -> Vec<hp_agents::AgentSpec> {
     hp_agents::catalogue().to_vec()
 }
 
+/// Read the stored session, including the layout to restore.
+#[tauri::command]
+fn session_load(state: State<'_, AppState>) -> Result<Session, String> {
+    state.store.load().map_err(|error| error.to_string())
+}
+
+/// Persist the session. The caller decides how often to call this.
+#[tauri::command]
+fn session_save(session: Session, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .store
+        .save(&session)
+        .map_err(|error| error.to_string())
+}
+
+/// Where the session file lives, so the UI can show it.
+#[tauri::command]
+fn session_path(state: State<'_, AppState>) -> String {
+    state.store.path().display().to_string()
+}
+
 /// Build and run the desktop app.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::new())
+        .setup(|app| {
+            let directory = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&directory)?;
+            let store = SessionStore::new(directory.join("session.json"));
+
+            // A session that cannot be read is not fatal: the app starts with
+            // nothing open. The file is left where it is rather than
+            // overwritten, so a person can look at it before losing it.
+            let session = store.load().unwrap_or_else(|error| {
+                eprintln!("hyperpane: could not read the session file: {error}");
+                Session::empty()
+            });
+
+            app.manage(AppState::new(store, session.workspace));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             workspace_get,
             workspace_init,
@@ -200,6 +239,9 @@ pub fn run() {
             pane_list,
             app_info,
             agent_catalogue,
+            session_load,
+            session_save,
+            session_path,
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

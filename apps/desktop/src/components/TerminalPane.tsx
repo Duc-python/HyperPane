@@ -8,6 +8,7 @@ import {
   paneSpawn,
   paneWrite,
   type PaneSpec,
+  type Profile,
   type PtyEvent,
 } from "../lib/ipc";
 
@@ -17,6 +18,8 @@ interface TerminalPaneProps {
   id: string;
   focused: boolean;
   canClose: boolean;
+  /** Profile this pane opens with, or `null` for the platform default shell. */
+  profile: Profile | null;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
 }
@@ -67,6 +70,7 @@ export function TerminalPane({
   id,
   focused,
   canClose,
+  profile,
   onFocus,
   onClose,
 }: TerminalPaneProps) {
@@ -74,6 +78,11 @@ export function TerminalPane({
   const termRef = useRef<Terminal | null>(null);
   const [status, setStatus] = useState<Status>("starting");
   const [title, setTitle] = useState<string>("shell");
+
+  // The profile is read once, when the pane opens. Editing a profile must not
+  // kill a shell that is already running, so this is captured at mount rather
+  // than tracked.
+  const openProfile = useRef(profile);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -118,7 +127,16 @@ export function TerminalPane({
 
     let disposed = false;
 
-    const spec: PaneSpec = { id, cols: term.cols, rows: term.rows };
+    const chosen = openProfile.current;
+    const spec: PaneSpec = {
+      id,
+      cols: term.cols,
+      rows: term.rows,
+      shell: chosen?.shell ?? null,
+      args: chosen?.args ?? [],
+      cwd: chosen?.cwd ?? null,
+      env: chosen?.env ?? {},
+    };
     void paneSpawn(spec, (event: PtyEvent) => {
       if (disposed) return;
       switch (event.kind) {

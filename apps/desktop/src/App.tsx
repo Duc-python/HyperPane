@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   appInfo,
   paneClose,
   paneIds,
   paneList,
+  sessionLoad,
+  sessionPath,
+  sessionSave,
   workspaceClosePane,
   workspaceCycleFocus,
   workspaceInit,
@@ -11,41 +21,90 @@ import {
   workspaceSetRatio,
   workspaceSplit,
   type AppInfo,
+  type Profile,
+  type Session,
   type SplitDirection,
   type Workspace,
 } from "./lib/ipc";
+import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
+import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
+import { CommandPalette } from "./components/CommandPalette";
+
+/** Must match `hp_core::SESSION_VERSION`. */
+const SESSION_VERSION = 1;
+const SAVE_DEBOUNCE_MS = 400;
+
+/** The next free `p<N>` id, so a restored layout cannot collide with a new pane. */
+function nextPaneNumber(workspace: Workspace): number {
+  let highest = 0;
+  for (const id of paneIds(workspace.layout)) {
+    const digits = /^p(\d+)$/.exec(id)?.[1];
+    if (digits) highest = Math.max(highest, Number(digits));
+  }
+  return highest + 1;
+}
 
 export default function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [defaultProfile, setDefaultProfile] = useState<string | null>(null);
+  const [paneProfiles, setPaneProfiles] = useState<Record<string, string>>({});
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sessionFile, setSessionFile] = useState<string | null>(null);
 
   const nextPane = useRef(1);
   const workspaceRef = useRef<Workspace | null>(null);
+  const defaultProfileRef = useRef<string | null>(null);
+  const commandsRef = useRef<Command[]>([]);
 
   useEffect(() => {
     workspaceRef.current = workspace;
   }, [workspace]);
 
-  // Boot: agree with the backend about what is open before drawing anything.
+  useEffect(() => {
+    defaultProfileRef.current = defaultProfile;
+  }, [defaultProfile]);
+
+  // Boot: restore the stored layout, or open the first pane.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      const details = await appInfo().catch(() => null);
+      if (!cancelled && details) setInfo(details);
+
       try {
-        const details = await appInfo();
-        if (!cancelled) setInfo(details);
-      } catch {
-        /* informational only */
-      }
-      try {
-        // A webview reload leaves the previous PTYs alive in Rust. Close them
-        // so the panes on screen and the panes on disk always agree.
+        const session = await sessionLoad();
+        if (cancelled) return;
+        setProfiles(session.profiles);
+        setDefaultProfile(session.defaultProfile);
+        setSessionFile(await sessionPath().catch(() => null));
+        if (cancelled) return;
+
+        // A webview reload leaves the previous PTYs alive in Rust. Every pane
+        // on screen is about to be re-created from the layout, so close the
+        // leftovers first and let each pane open its own shell.
         const stale = await paneList();
         await Promise.all(stale.map((id) => paneClose(id).catch(() => undefined)));
-        nextPane.current = 2;
-        const fresh = await workspaceInit("p1");
-        if (!cancelled) setWorkspace(fresh);
+        if (cancelled) return;
+
+        const fallbackProfile = session.defaultProfile ?? "default";
+
+        if (session.workspace) {
+          setWorkspace(session.workspace);
+          nextPane.current = nextPaneNumber(session.workspace);
+          setPaneProfiles(
+            Object.fromEntries(
+              paneIds(session.workspace.layout).map((id) => [id, fallbackProfile]),
+            ),
+          );
+        } else {
+          nextPane.current = 2;
+          setWorkspace(await workspaceInit("p1"));
+          setPaneProfiles({ p1: fallbackProfile });
+        }
       } catch (cause) {
         if (!cancelled) setError(String(cause));
       }
@@ -55,23 +114,49 @@ export default function App() {
     };
   }, []);
 
-  const split = useCallback(async (direction: SplitDirection) => {
-    const current = workspaceRef.current;
-    if (!current) return;
-    const target = current.focused ?? paneIds(current.layout)[0];
-    if (!target) return;
-    const id = `p${nextPane.current++}`;
-    try {
-      setWorkspace(await workspaceSplit(target, direction, id));
-    } catch (cause) {
-      setError(String(cause));
-    }
-  }, []);
+  // Persist. Debounced so a drag does not write a file per pointer move.
+  useEffect(() => {
+    if (!workspace) return;
+    const session: Session = {
+      version: SESSION_VERSION,
+      workspace,
+      profiles,
+      defaultProfile,
+    };
+    const timer = window.setTimeout(() => {
+      void sessionSave(session).catch((cause) => setError(String(cause)));
+    }, SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [workspace, profiles, defaultProfile]);
+
+  const splitWith = useCallback(
+    async (direction: SplitDirection, profileId: string | null) => {
+      const current = workspaceRef.current;
+      if (!current) return;
+      const target = current.focused ?? paneIds(current.layout)[0];
+      if (!target) return;
+
+      const id = `p${nextPane.current++}`;
+      const chosen = profileId ?? defaultProfileRef.current ?? "default";
+      setPaneProfiles((map) => ({ ...map, [id]: chosen }));
+      try {
+        setWorkspace(await workspaceSplit(target, direction, id));
+      } catch (cause) {
+        setError(String(cause));
+      }
+    },
+    [],
+  );
 
   const closePane = useCallback(async (id: string) => {
     const current = workspaceRef.current;
     if (!current || paneIds(current.layout).length <= 1) return;
     await paneClose(id).catch(() => undefined);
+    setPaneProfiles((map) => {
+      const remaining = { ...map };
+      delete remaining[id];
+      return remaining;
+    });
     try {
       setWorkspace(await workspaceClosePane(id));
     } catch (cause) {
@@ -103,43 +188,108 @@ export default function App() {
     }
   }, []);
 
+  const profileFor = useCallback(
+    (paneId: string): Profile | null => {
+      const wanted = paneProfiles[paneId];
+      if (!wanted) return null;
+      return profiles.find((profile) => profile.id === wanted) ?? null;
+    },
+    [paneProfiles, profiles],
+  );
+
+  const commands = useMemo<Command[]>(() => {
+    const hint = (id: string) => {
+      const chord = chordForCommand(id);
+      return chord ? formatChord(chord) : null;
+    };
+    const closeFocused = () => {
+      const focused = workspaceRef.current?.focused;
+      if (focused) void closePane(focused);
+    };
+
+    const list: Command[] = [
+      {
+        id: "app.palette",
+        title: "Command palette",
+        group: "App",
+        hint: hint("app.palette"),
+        run: () => setPaletteOpen((open) => !open),
+      },
+      {
+        id: "pane.splitRight",
+        title: "Split pane right",
+        group: "Pane",
+        hint: hint("pane.splitRight"),
+        run: () => splitWith("row", null),
+      },
+      {
+        id: "pane.splitDown",
+        title: "Split pane down",
+        group: "Pane",
+        hint: hint("pane.splitDown"),
+        run: () => splitWith("column", null),
+      },
+      {
+        id: "pane.close",
+        title: "Close focused pane",
+        group: "Pane",
+        hint: hint("pane.close"),
+        run: closeFocused,
+      },
+      {
+        id: "pane.next",
+        title: "Focus next pane",
+        group: "Pane",
+        hint: hint("pane.next"),
+        run: () => cycle(1),
+      },
+      {
+        id: "pane.previous",
+        title: "Focus previous pane",
+        group: "Pane",
+        hint: hint("pane.previous"),
+        run: () => cycle(-1),
+      },
+    ];
+
+    for (const profile of profiles) {
+      list.push({
+        id: `profile.open.${profile.id}`,
+        title: `New pane: ${profile.name}`,
+        group: "Profile",
+        hint: profile.shell ?? "platform default",
+        run: () => splitWith("row", profile.id),
+      });
+    }
+
+    return list;
+  }, [profiles, splitWith, closePane, cycle]);
+
+  useEffect(() => {
+    commandsRef.current = commands;
+  }, [commands]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const accelerator = event.ctrlKey || event.metaKey;
-      if (!accelerator) return;
-
-      if (event.key === "Tab") {
-        event.preventDefault();
-        void cycle(event.shiftKey ? -1 : 1);
-        return;
-      }
-      if (!event.shiftKey) return;
-
-      switch (event.key.toLowerCase()) {
-        case "e":
-          event.preventDefault();
-          void split("row");
-          break;
-        case "o":
-          event.preventDefault();
-          void split("column");
-          break;
-        case "w": {
-          const focused = workspaceRef.current?.focused;
-          if (!focused) return;
-          event.preventDefault();
-          void closePane(focused);
-          break;
-        }
-        default:
-          break;
-      }
+      const id = commandForEvent(event);
+      if (!id) return;
+      // Capture phase plus stopPropagation: without this the terminal would
+      // also receive the chord and send it to the shell.
+      event.preventDefault();
+      event.stopPropagation();
+      const command = commandsRef.current.find((entry) => entry.id === id);
+      void command?.run();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cycle, split, closePane]);
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, []);
 
-  const canClose = workspace !== null && paneIds(workspace.layout).length > 1;
+  const paneCount = workspace ? paneIds(workspace.layout).length : 0;
+  const canClose = paneCount > 1;
+  const activeProfile = profiles.find(
+    (profile) => profile.id === (defaultProfile ?? ""),
+  );
 
   return (
     <div className="flex h-full w-full flex-col bg-base">
@@ -162,8 +312,8 @@ export default function App() {
         <div className="flex items-center gap-1">
           <ToolButton
             label="Split right"
-            shortcut="Ctrl Shift E"
-            onClick={() => void split("row")}
+            shortcut={formatChord("mod+shift+e")}
+            onClick={() => void splitWith("row", null)}
             disabled={!workspace}
           >
             <rect x="1.2" y="1.8" width="10.6" height="8.4" rx="1.6" />
@@ -171,8 +321,8 @@ export default function App() {
           </ToolButton>
           <ToolButton
             label="Split down"
-            shortcut="Ctrl Shift O"
-            onClick={() => void split("column")}
+            shortcut={formatChord("mod+shift+o")}
+            onClick={() => void splitWith("column", null)}
             disabled={!workspace}
           >
             <rect x="1.2" y="1.8" width="10.6" height="8.4" rx="1.6" />
@@ -180,7 +330,7 @@ export default function App() {
           </ToolButton>
           <ToolButton
             label="Close pane"
-            shortcut="Ctrl Shift W"
+            shortcut={formatChord("mod+shift+w")}
             onClick={() => {
               const focused = workspace?.focused;
               if (focused) void closePane(focused);
@@ -191,11 +341,26 @@ export default function App() {
           </ToolButton>
         </div>
 
+        <button
+          type="button"
+          onClick={() => setPaletteOpen(true)}
+          className="flex items-center gap-2 rounded-md border border-line bg-raised/60 px-2.5 py-1 text-[11px] text-ink-muted transition-colors hover:border-line-strong hover:text-ink"
+        >
+          <span>Commands</span>
+          <kbd className="rounded border border-line bg-surface px-1.5 py-px text-[9px]">
+            {formatChord("mod+shift+p")}
+          </kbd>
+        </button>
+
         <div className="ml-auto flex items-center gap-3 text-[10px] text-ink-faint">
+          {activeProfile ? (
+            <span title={activeProfile.shell ?? "platform default shell"}>
+              {activeProfile.name}
+            </span>
+          ) : null}
           {workspace ? (
             <span>
-              {paneIds(workspace.layout).length} pane
-              {paneIds(workspace.layout).length === 1 ? "" : "s"}
+              {paneCount} pane{paneCount === 1 ? "" : "s"}
             </span>
           ) : null}
           {info ? <span className="uppercase">{info.platform}</span> : null}
@@ -223,6 +388,7 @@ export default function App() {
             path={[]}
             focused={workspace.focused}
             canClose={canClose}
+            profileFor={profileFor}
             onFocus={focus}
             onClose={(id) => void closePane(id)}
             onRatioCommit={(path, ratio) => void commitRatio(path, ratio)}
@@ -235,12 +401,28 @@ export default function App() {
       </main>
 
       <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-line/70 bg-surface/40 px-3 text-[10px] text-ink-faint">
-        <Hint keys="Ctrl Shift E" action="split right" />
-        <Hint keys="Ctrl Shift O" action="split down" />
-        <Hint keys="Ctrl Shift W" action="close pane" />
-        <Hint keys="Ctrl Tab" action="next pane" />
-        <span className="ml-auto">local-first · no account · no server</span>
+        <Hint chord="mod+shift+p" action="commands" />
+        <Hint chord="mod+shift+e" action="split right" />
+        <Hint chord="mod+shift+o" action="split down" />
+        <Hint chord="mod+shift+w" action="close pane" />
+        <Hint chord="mod+tab" action="next pane" />
+        {sessionFile ? (
+          <span
+            className="ml-auto truncate"
+            title={`Layout and profiles are stored in ${sessionFile}`}
+          >
+            session saved
+          </span>
+        ) : (
+          <span className="ml-auto">local-first · no account · no server</span>
+        )}
       </footer>
+
+      <CommandPalette
+        open={paletteOpen}
+        commands={commands}
+        onClose={() => setPaletteOpen(false)}
+      />
     </div>
   );
 }
@@ -284,11 +466,11 @@ function ToolButton({
   );
 }
 
-function Hint({ keys, action }: { keys: string; action: string }) {
+function Hint({ chord, action }: { chord: string; action: string }) {
   return (
     <span className="flex items-center gap-1.5">
       <kbd className="rounded border border-line bg-raised px-1.5 py-px text-[9px] text-ink-muted">
-        {keys}
+        {formatChord(chord)}
       </kbd>
       <span>{action}</span>
     </span>

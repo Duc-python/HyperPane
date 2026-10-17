@@ -121,3 +121,28 @@ export function containsPane(node: LayoutNode, pane: string): boolean {
   if (node.type === "leaf") return node.pane === pane;
   return containsPane(node.first, pane) || containsPane(node.second, pane);
 }
+
+/** Mirrors `hp_core::Profile`. */
+export interface Profile {
+  id: string;
+  name: string;
+  shell: string | null;
+  args: string[];
+  cwd: string | null;
+  env: Record<string, string>;
+}
+
+/** Mirrors `hp_core::Session`. */
+export interface Session {
+  version: number;
+  workspace: Workspace | null;
+  profiles: Profile[];
+  defaultProfile: string | null;
+}
+
+export const sessionLoad = () => invoke<Session>("session_load");
+
+export const sessionSave = (session: Session) =>
+  invoke<void>("session_save", { session });
+
+export const sessionPath = () => invoke<string>("session_path");

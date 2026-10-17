@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LayoutNode, SplitDirection } from "../lib/ipc";
+import type { LayoutNode, Profile, SplitDirection } from "../lib/ipc";
 import { TerminalPane } from "./TerminalPane";
 
 interface LayoutViewProps {
@@ -8,6 +8,8 @@ interface LayoutViewProps {
   path: boolean[];
   focused: string | null;
   canClose: boolean;
+  /** Which profile a newly opened pane should use. */
+  profileFor: (paneId: string) => Profile | null;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   onRatioCommit: (path: boolean[], ratio: number) => void;
@@ -18,6 +20,7 @@ export function LayoutView({
   path,
   focused,
   canClose,
+  profileFor,
   onFocus,
   onClose,
   onRatioCommit,
@@ -28,6 +31,7 @@ export function LayoutView({
         id={node.pane}
         focused={focused === node.pane}
         canClose={canClose}
+        profile={profileFor(node.pane)}
         onFocus={onFocus}
         onClose={onClose}
       />
@@ -40,6 +44,7 @@ export function LayoutView({
       path={path}
       focused={focused}
       canClose={canClose}
+      profileFor={profileFor}
       onFocus={onFocus}
       onClose={onClose}
       onRatioCommit={onRatioCommit}
@@ -63,6 +68,7 @@ function SplitView({
   path,
   focused,
   canClose,
+  profileFor,
   onFocus,
   onClose,
   onRatioCommit,
@@ -85,6 +91,7 @@ function SplitView({
           path={[...path, true]}
           focused={focused}
           canClose={canClose}
+          profileFor={profileFor}
           onFocus={onFocus}
           onClose={onClose}
           onRatioCommit={onRatioCommit}
@@ -107,6 +114,7 @@ function SplitView({
           path={[...path, false]}
           focused={focused}
           canClose={canClose}
+          profileFor={profileFor}
           onFocus={onFocus}
           onClose={onClose}
           onRatioCommit={onRatioCommit}

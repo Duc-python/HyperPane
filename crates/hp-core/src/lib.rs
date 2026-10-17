@@ -260,6 +260,115 @@ impl Workspace {
         let next = ((current + delta) % len + len) % len;
         self.focused = Some(panes[next as usize].clone());
     }
+
+    /// Whether this workspace has at least one pane with a real id.
+    ///
+    /// Every leaf carries a pane id, so "no panes" is not the same as an empty
+    /// tree: a blank id is what a half-written file looks like, and a pane
+    /// with no id cannot be spawned.
+    pub fn is_usable(&self) -> bool {
+        self.layout
+            .pane_ids()
+            .iter()
+            .any(|pane| !pane.trim().is_empty())
+    }
+}
+
+/// A per-pane launch configuration. `shell: None` means the platform default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl Profile {
+    /// The profile every install starts with.
+    pub fn default_shell() -> Self {
+        Self {
+            id: "default".to_string(),
+            name: "Default shell".to_string(),
+            shell: None,
+            args: Vec::new(),
+            cwd: None,
+            env: Default::default(),
+        }
+    }
+}
+
+/// Bumped when a field changes meaning, so an old file is refused rather than
+/// silently half-read.
+pub const SESSION_VERSION: u32 = 1;
+
+/// Everything that survives a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    pub version: u32,
+    /// `None` on a first run, or when the last session had no panes left.
+    pub workspace: Option<Workspace>,
+    #[serde(default)]
+    pub profiles: Vec<Profile>,
+    pub default_profile: Option<String>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl Session {
+    pub fn empty() -> Self {
+        Self {
+            version: SESSION_VERSION,
+            workspace: None,
+            profiles: vec![Profile::default_shell()],
+            default_profile: Some("default".to_string()),
+        }
+    }
+
+    pub fn profile(&self, id: &str) -> Option<&Profile> {
+        self.profiles.iter().find(|profile| profile.id == id)
+    }
+
+    /// The profile used when none is named.
+    pub fn active_profile(&self) -> Option<&Profile> {
+        self.default_profile
+            .as_deref()
+            .and_then(|id| self.profile(id))
+            .or_else(|| self.profiles.first())
+    }
+
+    /// Drop a workspace that has no usable pane, and make sure the default
+    /// profile still exists, so a hand-edited file cannot leave the app with
+    /// nothing to open.
+    pub fn normalise(mut self) -> Self {
+        if self
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| !workspace.is_usable())
+        {
+            self.workspace = None;
+        }
+        if self.profiles.is_empty() {
+            self.profiles.push(Profile::default_shell());
+        }
+        if self
+            .default_profile
+            .as_ref()
+            .is_none_or(|id| !self.profiles.iter().any(|p| &p.id == id))
+        {
+            self.default_profile = self.profiles.first().map(|p| p.id.clone());
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -370,5 +479,85 @@ mod tests {
         let json = serde_json::to_string(&w).expect("serialize");
         let back: Workspace = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(w, back);
+    }
+
+    #[test]
+    fn a_fresh_session_has_a_usable_default_profile() {
+        let session = Session::empty();
+        assert_eq!(session.version, SESSION_VERSION);
+        assert!(session.workspace.is_none());
+        let profile = session.active_profile().expect("a default profile");
+        assert_eq!(profile.id, "default");
+        assert!(profile.shell.is_none(), "None means the platform default");
+    }
+
+    #[test]
+    fn normalise_drops_a_workspace_with_no_panes() {
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace {
+            id: "w".into(),
+            name: "w".into(),
+            layout: LayoutNode::leaf("p1"),
+            focused: Some("p1".into()),
+            active: true,
+        });
+        assert!(session.clone().normalise().workspace.is_some());
+
+        // A leaf with an empty id is what a half-written file would look like.
+        if let Some(workspace) = session.workspace.as_mut() {
+            workspace.layout = LayoutNode::leaf("");
+        }
+        assert!(session.normalise().workspace.is_none());
+    }
+
+    #[test]
+    fn normalise_repairs_a_session_with_no_profiles() {
+        let mut session = Session::empty();
+        session.profiles.clear();
+        session.default_profile = Some("gone".into());
+        let repaired = session.normalise();
+        assert_eq!(repaired.profiles.len(), 1);
+        assert_eq!(repaired.default_profile.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn normalise_repoints_a_default_profile_that_vanished() {
+        let mut session = Session::empty();
+        session.profiles.push(Profile {
+            id: "zsh".into(),
+            name: "zsh".into(),
+            shell: Some("/bin/zsh".into()),
+            args: vec![],
+            cwd: None,
+            env: Default::default(),
+        });
+        session.default_profile = Some("does-not-exist".into());
+        assert_eq!(
+            session.normalise().default_profile.as_deref(),
+            Some("default")
+        );
+    }
+
+    #[test]
+    fn session_round_trips_through_json() {
+        let mut session = Session::empty();
+        let mut workspace = ws();
+        workspace.add_pane("p1", SplitDirection::Row, "p2");
+        session.workspace = Some(workspace);
+        session.profiles.push(Profile {
+            id: "ssh-prod".into(),
+            name: "prod".into(),
+            shell: Some("ssh".into()),
+            args: vec!["prod".into()],
+            cwd: Some("/srv".into()),
+            env: [("TERM".to_string(), "xterm-256color".to_string())]
+                .into_iter()
+                .collect(),
+        });
+
+        let json = serde_json::to_string(&session).expect("serialize");
+        let back: Session = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(session, back);
+        assert_eq!(back.profile("ssh-prod").expect("profile").args, ["prod"]);
     }
 }
