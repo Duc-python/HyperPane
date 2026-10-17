@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "teams": [
+    {
+      "key": "independent-review",
+      "title": {
+        "en": "Independent review",
+        "vi": "Duyệt độc lập"
+      },
+      "purpose": {
+        "en": "Three reviewers read the same change without seeing each other, then one tries to break their findings.",
+        "vi": "Ba người duyệt đọc cùng một thay đổi mà không thấy kết quả của nhau, rồi một người cố bác bỏ các phát hiện."
+      },
+      "group": "quality",
+      "archetype": "reviewer",
+      "gates": ["checkerPass"],
+      "stop": { "maxRounds": 1, "maxSpawns": 4, "wallMinutes": 30, "onStall": "escalate" },
+      "starterPrompt": {
+        "en": "Review the changes on [branch or commit range]. Report findings by severity, with file and line.",
+        "vi": "Duyệt các thay đổi trên [nhánh hoặc khoảng commit]. Báo phát hiện theo mức độ, kèm tệp và dòng."
+      },
+      "waves": [
+        {
+          "wave": 0,
+          "roles": [
+            {
+              "key": "lead",
+              "label": { "en": "Lead", "vi": "Trưởng nhóm" },
+              "kind": "leader",
+              "agents": ["claude-code", "codex"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "mid",
+              "focus": "Hand every reviewer the same diff reference and nothing else: no hints, no other reviewer's findings. Merge duplicates by file and line, keeping the highest severity. Pass the merged list to the challenger. Report APPROVE only when all three dimensions reported and the challenger cleared every critical and high finding; if a dimension is missing, report INCOMPLETE and name it."
+            }
+          ]
+        },
+        {
+          "wave": 1,
+          "roles": [
+            {
+              "key": "review-correctness",
+              "label": { "en": "Logic reviewer", "vi": "Duyệt logic" },
+              "kind": "checker",
+              "agents": ["omp", "claude-code"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "mid",
+              "focus": "Review the diff for correctness, not style. Read the whole changed file and its callers before judging. Report only findings you are more than 80% sure are real, ordered CRITICAL, HIGH, MEDIUM, LOW, each as file:line, the concrete trigger, and why existing guards do not catch it. Zero findings is a valid answer: say so, invent none. End with counts per severity."
+            },
+            {
+              "key": "review-failures",
+              "label": { "en": "Failure hunter", "vi": "Săn lỗi âm thầm" },
+              "kind": "checker",
+              "agents": ["omp", "claude-code"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "mid",
+              "focus": "Hunt silent failures in the changed code only: empty catch blocks, errors turned into null or empty values, log-and-forget, missing await, no timeout or rollback around network or file work. Each finding: file:line, severity, impact, fix. Skip anything a caller already handles. Zero findings is valid."
+            },
+            {
+              "key": "review-security",
+              "label": { "en": "Security reviewer", "vi": "Duyệt bảo mật" },
+              "kind": "checker",
+              "agents": ["omp", "claude-code"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "mid",
+              "focus": "Review the changed code for security only: hardcoded secrets, injection, path traversal, XSS, fetch of a user-supplied URL, missing authorisation checks, secrets in logs. You cannot run scanners, so mark dependency questions unverified. Report CRITICAL and HIGH as file:line with an exploit scenario. Over 80% sure only."
+            }
+          ]
+        },
+        {
+          "wave": 2,
+          "roles": [
+            {
+              "key": "challenger",
+              "label": { "en": "Final challenger", "vi": "Thẩm định phản biện" },
+              "kind": "checker",
+              "agents": ["codex", "claude-code"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "strong",
+              "focus": "Try to refute every CRITICAL and HIGH finding you are given: open the cited file and line, read the callers, and label each CONFIRMED, REFUTED or UNVERIFIED with the evidence. Add a finding only if you see a clear CRITICAL. Verdict: BLOCK if any CRITICAL is confirmed, WARNING if only HIGH, APPROVE otherwise. A clean diff is APPROVE; do not withhold it to look rigorous. List what no reviewer could check."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "feature-build",
+      "title": {
+        "en": "Build a feature",
+        "vi": "Xây một tính năng"
+      },
+      "purpose": {
+        "en": "Plans the change, builds it in its own branch with tests, then has it reviewed. Merging stays with you.",
+        "vi": "Lập kế hoạch, xây trong nhánh riêng kèm kiểm thử, rồi để người khác duyệt. Việc merge là quyết định của bạn."
+      },
+      "group": "dev",
+      "archetype": "pipeline",
+      "gates": ["humanPlan", "checkerPass", "humanCommit"],
+      "stop": { "maxRounds": 2, "maxSpawns": 5, "wallMinutes": 120, "onStall": "escalate" },
+      "starterPrompt": {
+        "en": "Build [feature]. Describe the outcome you want, not the implementation.",
+        "vi": "Xây [tính năng]. Mô tả kết quả bạn muốn, không cần mô tả cách làm."
+      },
+      "waves": [
+        {
+          "wave": 0,
+          "roles": [
+            {
+              "key": "planner",
+              "label": { "en": "Planner", "vi": "Người lập kế hoạch" },
+              "kind": "leader",
+              "agents": ["claude-code", "codex"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "strong",
+              "focus": "Map what the change touches: entry points, data, callers, tests that will need to move. Write a short plan with the acceptance test that proves it, and stop. Do not write code yet: a person approves the plan first."
+            }
+          ]
+        },
+        {
+          "wave": 1,
+          "roles": [
+            {
+              "key": "builder",
+              "label": { "en": "Builder", "vi": "Người xây" },
+              "kind": "worker",
+              "agents": ["claude-code", "codex"],
+              "count": 1,
+              "worktree": true,
+              "tier": "strong",
+              "focus": "Implement exactly the approved plan in your own worktree. Write the tests first, then the code. Run the full check command and read the real output. Do not touch shared config: if you need a dependency or a schema change, report blocked and say what you need. Do not push, deploy or merge. End with the RESULT line."
+            }
+          ]
+        },
+        {
+          "wave": 2,
+          "roles": [
+            {
+              "key": "reviewer",
+              "label": { "en": "Reviewer", "vi": "Người duyệt" },
+              "kind": "checker",
+              "agents": ["codex", "omp"],
+              "count": 1,
+              "readOnly": true,
+              "tier": "strong",
+              "focus": "Review the builder's diff against the plan and the acceptance test. Re-run the tests yourself and read the output; a green report is a claim, not a result. Check for scope creep and files outside the plan. Report findings as file:line with severity, or APPROVE with what you could not check."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

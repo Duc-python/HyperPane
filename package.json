@@ -1,0 +1,12 @@
+{
+  "name": "hyperpane",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "pnpm --filter @hyperpane/desktop dev",
+    "build": "pnpm --filter @hyperpane/desktop build",
+    "tauri": "pnpm --filter @hyperpane/desktop tauri",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
