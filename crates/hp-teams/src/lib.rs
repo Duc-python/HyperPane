@@ -68,18 +68,13 @@ pub enum RoleKind {
 }
 
 /// How much model a role deserves, as a hint for whoever picks one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Tier {
     Fast,
+    #[default]
     Mid,
     Strong,
-}
-
-impl Default for Tier {
-    fn default() -> Self {
-        Self::Mid
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
