@@ -39,6 +39,11 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Worktrees: create on `agent/<8>`, reuse, remove without deleting the branch
 - [x] Give an agent pane its own worktree from the UI, shown in its header
 - [ ] Status detection: working / blocked / done, per agent
+- [ ] Worktree housekeeping: offer to remove a finished run's worktree, and
+      tolerate a directory that is still held instead of failing silently.
+      One leftover empty directory remains from the verification run: a handle
+      was still open on it after the app closed, and no process could be
+      identified as the holder without guessing among unrelated ones.
 - [ ] Token meter + budget guard (blocks above 85% of the 5-hour window)
 - [ ] Spawn approval card and audit log
 - [ ] Caps: live children, spawn rate, wall clock

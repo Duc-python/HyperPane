@@ -105,6 +105,11 @@ behaviour (`the_last_pane_cannot_be_closed`), not as `test_foo`.
 The development double-invoke would open a second shell inside one pane. Pane
 lifecycle is explicit rather than idempotent.
 
+**Closing a pane ends its console's processes.** A ConPTY close reaches the
+processes attached to it, so an agent's helpers exit with the pane. Verified by
+comparing process start times after a run, not assumed: nothing to clean up by
+hand, and no need for a job object yet.
+
 **Comments say why.** A comment that restates the code is noise. A comment that
 records a constraint, a platform quirk or a rejected alternative is the point of
 having it.
