@@ -5,6 +5,7 @@
 //! never has to guess what the tree looks like.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -93,6 +94,9 @@ struct MemberClaim {
     /// The child's own last `RESULT` line, if it printed one. A claim about its
     /// own work, not a fact the app checked.
     result: Option<RunResult>,
+    /// What the child wrote to its findings file, if it wrote one. The findings
+    /// themselves, which a `RESULT` line only ever summarises.
+    findings: Option<String>,
     /// The process had already ended when this was recorded.
     finished: bool,
 }
@@ -126,6 +130,8 @@ struct AppState {
     /// Where agent worktrees are created. Outside any repository, so opening a
     /// pane never changes a person's checkout.
     worktree_dir: PathBuf,
+    /// Where a reading role writes what it found.
+    findings_dir: PathBuf,
     /// Per-pane agent state, keyed by pane id.
     runs: Arc<Mutex<HashMap<String, RunState>>>,
     /// Where each pane's shell last said it was, from its own OSC 7 reports.
@@ -147,6 +153,7 @@ impl AppState {
         store: SessionStore,
         integration_dir: PathBuf,
         worktree_dir: PathBuf,
+        findings_dir: PathBuf,
         audit: AuditLog,
         workspace: Option<Workspace>,
     ) -> Self {
@@ -155,6 +162,7 @@ impl AppState {
             store,
             integration_dir,
             worktree_dir,
+            findings_dir,
             runs: Arc::new(Mutex::new(HashMap::new())),
             directories: Arc::new(Mutex::new(HashMap::new())),
             guard: Mutex::new(SpawnGuard::new(Limits::default())),
@@ -767,6 +775,12 @@ fn open_wave(
             .as_ref()
             .map(|worktree| worktree.path.display().to_string());
 
+        // A pane id can be reused by a later run, so anything an earlier run
+        // left here is not this run's finding.
+        let findings = findings_path(&state.findings_dir, pane);
+        let _ = std::fs::remove_file(&findings);
+        let findings_text = findings.display().to_string();
+
         let brief = hp_teams::write_brief(&hp_teams::BriefInput {
             team: &preset.title_en(),
             purpose: &preset.purpose_en(),
@@ -776,6 +790,7 @@ fn open_wave(
             read_only: member.read_only,
             worktree: worktree_path.as_deref(),
             wave: member.wave,
+            findings: Some(&findings_text),
         });
 
         let opened = open_reserved(state, pane, &member.agent, &brief, worktree.as_ref())?;
@@ -800,6 +815,36 @@ fn open_wave(
 /// What each pane of a wave has reported, and whether it is still going.
 type WaveReport = HashMap<String, (Option<RunResult>, bool)>;
 
+/// Where a member's findings go. Deterministic from the pane, so a pane reused
+/// by a later run cannot show the earlier run's findings by accident.
+fn findings_path(directory: &Path, pane: &str) -> PathBuf {
+    directory.join(format!("{pane}.md"))
+}
+
+/// Read what a member wrote.
+///
+/// Bounded, because a runaway file must not become the app's problem, and
+/// `None` for an empty file: writing nothing is a valid answer, and it is not
+/// the same as writing something.
+fn read_findings(path: &Path) -> Option<String> {
+    const LIMIT: u64 = 16 * 1024;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut text = String::new();
+    file.take(LIMIT).read_to_string(&mut text).ok()?;
+
+    // Notepad and PowerShell both write a UTF-8 BOM, and it would show up as a
+    // stray character in front of the first finding.
+    let text = text.trim_start_matches('\u{FEFF}');
+    let trimmed = text.trim();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Read a wave's panes once, so the two locks are never held at the same time.
 fn wave_report(runs: &HashMap<String, RunState>, panes: &[String]) -> WaveReport {
     panes
@@ -820,7 +865,7 @@ fn wave_report(runs: &HashMap<String, RunState>, panes: &[String]) -> WaveReport
 /// Rebuilt from the panes each time rather than appended to, so a member that
 /// reports twice ends up with its latest claim instead of two, and a pane that
 /// closed keeps the claim it made before it went.
-fn snapshot_claims(run: &mut TeamRun, report: &WaveReport) {
+fn snapshot_claims(run: &mut TeamRun, report: &WaveReport, findings_dir: &Path) {
     let wave = run.progress.wave;
     let members: Vec<&PlannedMember> = run
         .plan
@@ -833,6 +878,14 @@ fn snapshot_claims(run: &mut TeamRun, report: &WaveReport) {
     for (member, pane) in members.iter().zip(run.panes.iter()) {
         let (result, finished) = report.get(pane).cloned().unwrap_or((None, true));
 
+        // Only read a finished member's file: while an agent is writing, a
+        // half-written finding is worse to show than none.
+        let findings = if finished {
+            read_findings(&findings_path(findings_dir, pane))
+        } else {
+            None
+        };
+
         run.claims.push(MemberClaim {
             wave,
             pane: pane.clone(),
@@ -840,6 +893,7 @@ fn snapshot_claims(run: &mut TeamRun, report: &WaveReport) {
             label: member.label.clone(),
             agent: member.agent.clone(),
             result,
+            findings,
             finished,
         });
     }
@@ -959,7 +1013,7 @@ fn team_status(state: State<'_, AppState>) -> Option<TeamStatus> {
 
     let mut team = state.team.lock();
     let run = team.as_mut()?;
-    snapshot_claims(run, &report);
+    snapshot_claims(run, &report, &state.findings_dir);
 
     let running = running_panes(&state.runs.lock(), &run.panes);
     let next_wave = run.progress.pending.first().copied();
@@ -1031,7 +1085,7 @@ fn team_advance(panes: Vec<String>, state: State<'_, AppState>) -> Result<TeamAd
     // Recorded here as well as on every status read, so the wave being left
     // behind keeps its claims even if nobody polled before it finished.
     let report = wave_report(&state.runs.lock(), &run.panes);
-    snapshot_claims(&mut run, &report);
+    snapshot_claims(&mut run, &report, &state.findings_dir);
     let before = run.progress.clone();
 
     let outcome = match run.progress.advance(&preset, &run.plan, running) {
@@ -1247,6 +1301,7 @@ pub fn run() {
                 store,
                 directory.join("integration"),
                 directory.join("worktrees"),
+                directory.join("findings"),
                 AuditLog::new(directory.join("audit.log")),
                 session.workspace,
             ));

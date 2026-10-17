@@ -683,26 +683,31 @@ export default function App() {
           <div className="min-w-0 flex-1">
             <div className="truncate">{teamRun.holdingMessage}</div>
             {holdingClaims.length > 0 ? (
-              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+              <ul className="mt-1 flex flex-col gap-0.5">
                 {holdingClaims.map((claim) => (
-                  <li
-                    key={claim.pane}
-                    className="text-[10px] text-ink-muted"
-                    title={
-                      claim.result
-                        ? `${claim.agent} reported${claim.result.files.length > 0 ? `: ${claim.result.files.join(", ")}` : " no files"}`
+                  <li key={claim.pane} className="text-[10px] text-ink-muted">
+                    <span
+                      title={
+                        claim.result
+                          ? `${claim.agent} reported${claim.result.files.length > 0 ? `: ${claim.result.files.join(", ")}` : " no files"}`
+                          : claim.finished
+                            ? `${claim.agent} exited without printing a RESULT line`
+                            : `${claim.agent} is still going`
+                      }
+                    >
+                      <span className="text-accent">{claim.label}</span>
+                      {" · "}
+                      {claim.result
+                        ? describeResult(claim.result)
                         : claim.finished
-                          ? `${claim.agent} exited without printing a RESULT line`
-                          : `${claim.agent} is still going`
-                    }
-                  >
-                    <span className="text-accent">{claim.label}</span>
-                    {" · "}
-                    {claim.result
-                      ? describeResult(claim.result)
-                      : claim.finished
-                        ? "no report"
-                        : "still going"}
+                          ? "no report"
+                          : "still going"}
+                    </span>
+                    {claim.findings ? (
+                      <pre className="mt-0.5 max-h-28 overflow-auto rounded border border-line/60 bg-base/60 px-2 py-1 font-mono text-[10px] whitespace-pre-wrap text-ink-faint">
+                        {claim.findings}
+                      </pre>
+                    ) : null}
                   </li>
                 ))}
               </ul>

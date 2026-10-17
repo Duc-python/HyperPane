@@ -35,6 +35,9 @@ pub struct BriefInput<'a> {
     /// The directory this member is confined to, when it has one.
     pub worktree: Option<&'a str>,
     pub wave: u32,
+    /// Where a reading role writes what it found, when it has somewhere to
+    /// write. A RESULT line is a summary; findings are the findings.
+    pub findings: Option<&'a str>,
 }
 
 /// Render the brief a member reads.
@@ -63,6 +66,17 @@ pub fn write_brief(input: &BriefInput<'_>) -> String {
             .to_string()
     };
 
+    let findings = match input.findings {
+        Some(path) => format!(
+            "\nWrite what you found to {path} before you finish: one finding per \
+             line, each naming the file and line it is about and why it matters. \
+             Write nothing else in that file. A person reads it before deciding \
+             whether the work goes on, so an empty file is a valid answer and \
+             an invented one is not.\n"
+        ),
+        None => String::new(),
+    };
+
     let text = format!(
         "GOAL\n\
          {task}\n\
@@ -81,6 +95,7 @@ pub fn write_brief(input: &BriefInput<'_>) -> String {
          works.\n\
          \n\
          REPORT\n\
+         {findings}\
          As your last line, print exactly this shape, one line:\n\
          RESULT status=done|failed|blocked files=<comma-separated paths you \
          changed, empty if none> tests=pass|fail|none\n",
@@ -91,6 +106,7 @@ pub fn write_brief(input: &BriefInput<'_>) -> String {
         wave = input.wave,
         scope = scope,
         focus = input.focus.trim(),
+        findings = findings,
     );
 
     fit(text)
@@ -135,6 +151,7 @@ mod tests {
             read_only: false,
             worktree: None,
             wave: 1,
+            findings: None,
         }
     }
 
@@ -241,5 +258,26 @@ mod tests {
         });
         assert!(!brief.contains("[truncated"));
         assert!(brief.contains(&focus));
+    }
+
+    #[test]
+    fn a_reader_is_told_where_to_write_what_it_found() {
+        let brief = write_brief(&BriefInput {
+            findings: Some("/tmp/findings/p3.md"),
+            ..input()
+        });
+        assert!(brief.contains("/tmp/findings/p3.md"), "{brief}");
+        assert!(brief.contains("one finding per line"), "{brief}");
+        assert!(
+            brief.contains("an empty file is a valid answer"),
+            "a reader must not feel obliged to invent findings:\n{brief}"
+        );
+    }
+
+    #[test]
+    fn a_brief_with_nothing_to_write_to_says_nothing_about_findings() {
+        let brief = write_brief(&input());
+        assert!(!brief.contains("found to"), "{brief}");
+        assert!(!brief.contains("empty file"), "{brief}");
     }
 }

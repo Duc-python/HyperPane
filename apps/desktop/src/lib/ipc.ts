@@ -362,6 +362,8 @@ export interface MemberClaim {
   label: string;
   agent: string;
   result: RunResult | null;
+  /** What the member wrote to its findings file, when it wrote one. */
+  findings: string | null;
   /** The process had already ended when this was recorded. */
   finished: boolean;
 }
