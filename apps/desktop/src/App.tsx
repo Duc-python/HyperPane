@@ -17,6 +17,7 @@ import {
   sessionLoad,
   sessionPath,
   sessionSave,
+  teamsList,
   workspaceClosePane,
   workspaceCycleFocus,
   workspaceInit,
@@ -25,9 +26,11 @@ import {
   workspaceSplit,
   type AgentInfo,
   type AppInfo,
+  type Localised,
   type Profile,
   type Session,
   type SplitDirection,
+  type TeamPreset,
   type Workspace,
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
@@ -36,11 +39,17 @@ import { openPaneAgent, type PaneAgent } from "./lib/agents";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
+import { TeamPlanPanel } from "./components/TeamPlanPanel";
 import type { PaneController } from "./components/TerminalPane";
 
 /** Must match `hp_core::SESSION_VERSION`. */
 const SESSION_VERSION = 1;
 const SAVE_DEBOUNCE_MS = 400;
+
+/** English first, then whatever language the preset has. */
+function localisedTitle(text: Localised): string {
+  return text["en"] ?? Object.values(text)[0] ?? "";
+}
 
 /** The next free `p<N>` id, so a restored layout cannot collide with a new pane. */
 function nextPaneNumber(workspace: Workspace): number {
@@ -70,6 +79,9 @@ export default function App() {
     worktree: boolean;
   } | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [teams, setTeams] = useState<TeamPreset[]>([]);
+  /** Set while the plan for a team is on screen. */
+  const [teamKey, setTeamKey] = useState<string | null>(null);
   const [sessionFile, setSessionFile] = useState<string | null>(null);
   const [auditFile, setAuditFile] = useState<string | null>(null);
 
@@ -98,6 +110,9 @@ export default function App() {
 
       const log = await auditPath().catch(() => null);
       if (!cancelled) setAuditFile(log);
+
+      const loadedTeams = await teamsList().catch(() => []);
+      if (!cancelled) setTeams(loadedTeams);
 
       try {
         const session = await sessionLoad();
@@ -382,8 +397,18 @@ export default function App() {
       });
     }
 
+    for (const team of teams) {
+      list.push({
+        id: `team.plan.${team.key}`,
+        title: `Team: ${localisedTitle(team.title)}`,
+        group: "Team",
+        hint: team.group ?? null,
+        run: () => setTeamKey(team.key),
+      });
+    }
+
     return list;
-  }, [profiles, agents, splitWith, closePane, cycle, withFocusedPane]);
+  }, [profiles, agents, teams, splitWith, closePane, cycle, withFocusedPane]);
 
   useEffect(() => {
     commandsRef.current = commands;
@@ -547,6 +572,11 @@ export default function App() {
           <span className="ml-auto">local-first · no account · no server</span>
         )}
       </footer>
+
+      <TeamPlanPanel
+        teamKey={teamKey ?? ""}
+        onClose={() => setTeamKey(null)}
+      />
 
       <CommandPalette
         open={paletteOpen}

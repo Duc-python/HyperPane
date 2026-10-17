@@ -235,6 +235,83 @@ export const agentOpen = (request: AgentOpenRequest) =>
 /** Where the activity log lives. */
 export const auditPath = () => invoke<string>("audit_path");
 
+export type Archetype =
+  | "reviewer"
+  | "pipeline"
+  | "researcher"
+  | "drafter"
+  | "operator"
+  | "control";
+
+export type Gate = "humanPlan" | "checkerPass" | "humanCommit";
+export type RoleKind = "leader" | "checker" | "worker";
+export type Tier = "fast" | "mid" | "strong";
+export type OnStall = "escalate" | "stop";
+
+/** Text in one or more languages, keyed by language tag. */
+export type Localised = Record<string, string>;
+
+export interface TeamRole {
+  key: string;
+  label: Localised | null;
+  kind: RoleKind;
+  /** Agent ids, most preferred first. */
+  agents: string[];
+  count: number;
+  focus: string;
+  readOnly: boolean;
+  worktree: boolean;
+  tier: Tier;
+}
+
+export interface TeamStop {
+  maxRounds: number;
+  maxSpawns: number;
+  wallMinutes: number;
+  onStall: OnStall;
+}
+
+export interface TeamPreset {
+  key: string;
+  title: Localised;
+  purpose: Localised;
+  group: string | null;
+  archetype: Archetype;
+  gates: Gate[];
+  stop: TeamStop;
+  waves: Array<{ wave: number; roles: TeamRole[] }>;
+  starterPrompt: Localised | null;
+}
+
+/** One member a run would open. */
+export interface PlannedMember {
+  role: string;
+  label: string;
+  wave: number;
+  agent: string;
+  kind: RoleKind;
+  tier: Tier;
+  readOnly: boolean;
+  worktree: boolean;
+  focus: string;
+}
+
+export interface TeamPlan {
+  key: string;
+  title: string;
+  purpose: string;
+  gates: Gate[];
+  stop: TeamStop;
+  waves: Array<{ wave: number; members: PlannedMember[] }>;
+  /** Why it cannot be planned, when it cannot. */
+  refusal: string | null;
+  problems: string[];
+}
+
+export const teamsList = () => invoke<TeamPreset[]>("teams_list");
+
+export const teamPlan = (key: string) => invoke<TeamPlan>("team_plan", { key });
+
 export const agentsAvailable = () => invoke<AgentInfo[]>("agents_available");
 
 export const agentLaunch = (agent: string, task: string) =>

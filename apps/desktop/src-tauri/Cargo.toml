@@ -20,6 +20,7 @@ hp-pty.workspace = true
 hp-agents.workspace = true
 hp-store.workspace = true
 hp-shell.workspace = true
+hp-teams.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true

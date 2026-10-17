@@ -1607,6 +1607,7 @@ dependencies = [
  "hp-pty",
  "hp-shell",
  "hp-store",
+ "hp-teams",
  "parking_lot",
  "serde",
  "serde_json",

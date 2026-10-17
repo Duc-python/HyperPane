@@ -578,6 +578,99 @@ fn audit_path(state: State<'_, AppState>) -> String {
     state.audit.path().display().to_string()
 }
 
+/// Agent ids that are actually installed on this machine.
+fn installed_agents() -> std::collections::BTreeSet<String> {
+    hp_agents::catalogue()
+        .iter()
+        .filter(|agent| agent.is_installed())
+        .map(|agent| agent.id.to_string())
+        .collect()
+}
+
+/// The shipped team presets, as a picker needs them.
+#[tauri::command]
+fn teams_list() -> Result<Vec<hp_teams::Preset>, String> {
+    let file = hp_teams::PresetFile::parse(hp_teams::SHIPPED).map_err(|e| e.to_string())?;
+    let mut teams = file.teams.clone();
+    teams.sort_by(|left, right| {
+        left.group
+            .as_deref()
+            .unwrap_or("")
+            .cmp(right.group.as_deref().unwrap_or(""))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    Ok(teams)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanWave {
+    wave: u32,
+    members: Vec<hp_teams::PlannedMember>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamPlan {
+    key: String,
+    title: String,
+    purpose: String,
+    gates: Vec<hp_teams::Gate>,
+    stop: hp_teams::Stop,
+    /// The waves a run would open, when it can be planned at all.
+    waves: Vec<PlanWave>,
+    /// Why it cannot be planned, when it cannot.
+    refusal: Option<String>,
+    /// What is wrong with the preset itself, which does not stop a run but is
+    /// worth saying out loud.
+    problems: Vec<String>,
+}
+
+/// Work out what a team would do, without doing any of it.
+///
+/// Nothing here opens a pane or starts a process. Seeing the plan before it
+/// costs anything is the point.
+#[tauri::command]
+fn team_plan(key: String) -> Result<TeamPlan, String> {
+    let file = hp_teams::PresetFile::parse(hp_teams::SHIPPED).map_err(|e| e.to_string())?;
+    let preset = file
+        .team(&key)
+        .ok_or_else(|| format!("no team called {key}"))?;
+
+    let installed = installed_agents();
+    let (waves, refusal) = match hp_teams::plan(preset, &installed) {
+        Ok(members) => {
+            let mut ordered: Vec<u32> = members.iter().map(|member| member.wave).collect();
+            ordered.sort_unstable();
+            ordered.dedup();
+            let waves = ordered
+                .into_iter()
+                .map(|wave| PlanWave {
+                    wave,
+                    members: members
+                        .iter()
+                        .filter(|member| member.wave == wave)
+                        .cloned()
+                        .collect(),
+                })
+                .collect();
+            (waves, None)
+        }
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
+
+    Ok(TeamPlan {
+        key: preset.key.clone(),
+        title: preset.title_en(),
+        purpose: preset.purpose_en(),
+        gates: preset.gates.clone(),
+        stop: preset.stop.clone(),
+        waves,
+        refusal,
+        problems: file.problems(),
+    })
+}
+
 /// Where a pane's shell last said it was, if it reports that at all.
 #[tauri::command]
 fn pane_cwd(id: String, state: State<'_, AppState>) -> Option<String> {
@@ -652,6 +745,8 @@ pub fn run() {
             agent_worktree,
             agent_open,
             audit_path,
+            teams_list,
+            team_plan,
             pane_run_state,
             pane_cwd,
             session_load,

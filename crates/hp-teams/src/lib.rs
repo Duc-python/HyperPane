@@ -429,6 +429,20 @@ mod tests {
     }
 
     #[test]
+    fn every_shipped_preset_can_be_planned_with_a_single_agent_installed() {
+        // A preset that needs three specific agents is a preset most people
+        // cannot run. `opencode` is the last choice in every role, so the
+        // shipped examples work on a machine that has only that one.
+        let file = PresetFile::parse(SHIPPED).expect("parse");
+        for team in &file.teams {
+            let members = plan(team, &installed(&["opencode"])).unwrap_or_else(|error| {
+                panic!("{} cannot run with one agent installed: {error}", team.key)
+            });
+            assert_eq!(members.len() as u32, team.requested_members());
+        }
+    }
+
+    #[test]
     fn a_preset_may_have_more_members_than_spawns_because_the_leader_is_not_one() {
         let file = PresetFile::parse(SHIPPED).expect("parse");
         let team = file.team("independent-review").expect("present");
