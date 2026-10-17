@@ -31,6 +31,7 @@ import { shortenPath } from "./lib/paths";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
+import type { PaneController } from "./components/TerminalPane";
 
 /** Must match `hp_core::SESSION_VERSION`. */
 const SESSION_VERSION = 1;
@@ -203,6 +204,27 @@ export default function App() {
     [info],
   );
 
+  // Live panes, by id, so a command can act on the focused one. Panes register
+  // themselves when their terminal exists and clear on the way out.
+  const controllers = useRef(new Map<string, PaneController>());
+  const onReady = useCallback(
+    (id: string, controller: PaneController | null) => {
+      if (controller) controllers.current.set(id, controller);
+      else controllers.current.delete(id);
+    },
+    [],
+  );
+
+  const withFocusedPane = useCallback(
+    (action: (controller: PaneController) => void) => {
+      const focused = workspaceRef.current?.focused;
+      if (!focused) return;
+      const controller = controllers.current.get(focused);
+      if (controller) action(controller);
+    },
+    [],
+  );
+
   const commands = useMemo<Command[]>(() => {
     const hint = (id: string) => {
       const chord = chordForCommand(id);
@@ -256,6 +278,20 @@ export default function App() {
         hint: hint("pane.previous"),
         run: () => cycle(-1),
       },
+      {
+        id: "pane.previousPrompt",
+        title: "Jump to the previous prompt",
+        group: "Scrollback",
+        hint: hint("pane.previousPrompt"),
+        run: () => withFocusedPane((pane) => pane.jumpToPreviousPrompt()),
+      },
+      {
+        id: "pane.nextPrompt",
+        title: "Jump to the next prompt",
+        group: "Scrollback",
+        hint: hint("pane.nextPrompt"),
+        run: () => withFocusedPane((pane) => pane.jumpToNextPrompt()),
+      },
     ];
 
     for (const profile of profiles) {
@@ -269,7 +305,7 @@ export default function App() {
     }
 
     return list;
-  }, [profiles, splitWith, closePane, cycle]);
+  }, [profiles, splitWith, closePane, cycle, withFocusedPane]);
 
   useEffect(() => {
     commandsRef.current = commands;
@@ -396,6 +432,7 @@ export default function App() {
             canClose={canClose}
             profileFor={profileFor}
             formatPath={formatPath}
+            onReady={onReady}
             onFocus={focus}
             onClose={(id) => void closePane(id)}
             onRatioCommit={(path, ratio) => void commitRatio(path, ratio)}
@@ -413,6 +450,8 @@ export default function App() {
         <Hint chord="mod+shift+o" action="split down" />
         <Hint chord="mod+shift+w" action="close pane" />
         <Hint chord="mod+tab" action="next pane" />
+        <Hint chord="mod+shift+up" action="previous prompt" />
+        <Hint chord="mod+shift+down" action="next prompt" />
         {sessionFile ? (
           <span
             className="ml-auto truncate"

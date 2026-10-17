@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LayoutNode, Profile, SplitDirection } from "../lib/ipc";
-import { TerminalPane } from "./TerminalPane";
+import { TerminalPane, type PaneController } from "./TerminalPane";
 
 interface LayoutViewProps {
   node: LayoutNode;
@@ -12,6 +12,8 @@ interface LayoutViewProps {
   profileFor: (paneId: string) => Profile | null;
   /** Shortens a filesystem path for the pane header. */
   formatPath: (path: string) => string;
+  /** Publishes a pane's controller so commands can drive it. */
+  onReady: (id: string, controller: PaneController | null) => void;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   onRatioCommit: (path: boolean[], ratio: number) => void;
@@ -24,6 +26,7 @@ export function LayoutView({
   canClose,
   profileFor,
   formatPath,
+  onReady,
   onFocus,
   onClose,
   onRatioCommit,
@@ -36,6 +39,7 @@ export function LayoutView({
         canClose={canClose}
         profile={profileFor(node.pane)}
         formatPath={formatPath}
+        onReady={onReady}
         onFocus={onFocus}
         onClose={onClose}
       />
@@ -50,6 +54,7 @@ export function LayoutView({
       canClose={canClose}
       profileFor={profileFor}
       formatPath={formatPath}
+      onReady={onReady}
       onFocus={onFocus}
       onClose={onClose}
       onRatioCommit={onRatioCommit}
@@ -75,6 +80,7 @@ function SplitView({
   canClose,
   profileFor,
   formatPath,
+  onReady,
   onFocus,
   onClose,
   onRatioCommit,
@@ -99,6 +105,7 @@ function SplitView({
           canClose={canClose}
           profileFor={profileFor}
           formatPath={formatPath}
+          onReady={onReady}
           onFocus={onFocus}
           onClose={onClose}
           onRatioCommit={onRatioCommit}
@@ -123,6 +130,7 @@ function SplitView({
           canClose={canClose}
           profileFor={profileFor}
           formatPath={formatPath}
+          onReady={onReady}
           onFocus={onFocus}
           onClose={onClose}
           onRatioCommit={onRatioCommit}

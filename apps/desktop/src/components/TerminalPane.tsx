@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal, type IMarker, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { formatDuration } from "../lib/format";
 import {
   paneClose,
   paneResize,
@@ -14,6 +15,23 @@ import {
 
 type Status = "starting" | "live" | "exited" | "failed";
 
+/**
+ * What the rest of the app may ask of one pane.
+ *
+ * The terminal instance lives inside this component, so anything that needs to
+ * act on it is handed back through here rather than reaching into the DOM.
+ */
+export interface PaneController {
+  focus: () => void;
+  /** Scrolls to the previous prompt. Returns false when there is none. */
+  jumpToPreviousPrompt: () => boolean;
+  /** Scrolls to the next prompt. Returns false when there is none. */
+  jumpToNextPrompt: () => boolean;
+}
+
+/** Prompt marks kept for jumping. Older ones are dropped. */
+const MAX_PROMPT_MARKS = 500;
+
 interface TerminalPaneProps {
   id: string;
   focused: boolean;
@@ -22,6 +40,8 @@ interface TerminalPaneProps {
   profile: Profile | null;
   /** Shortens a filesystem path for the header. */
   formatPath: (path: string) => string;
+  /** Publishes this pane's controller, or `null` when it goes away. */
+  onReady: (id: string, controller: PaneController | null) => void;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
 }
@@ -74,6 +94,7 @@ export function TerminalPane({
   canClose,
   profile,
   formatPath,
+  onReady,
   onFocus,
   onClose,
 }: TerminalPaneProps) {
@@ -84,6 +105,14 @@ export function TerminalPane({
   const [cwd, setCwd] = useState<string | null>(null);
   /** Status of the last finished command, from OSC 133. */
   const [exitCode, setExitCode] = useState<number | null>(null);
+  /**
+   * How long the last command took.
+   *
+   * Only shells that mark the start of a command report this. PowerShell does
+   * not, so this stays empty there rather than showing the time a person spent
+   * typing as if it were the command's own.
+   */
+  const [durationMs, setDurationMs] = useState<number | null>(null);
 
   // The profile is read once, when the pane opens. Editing a profile must not
   // kill a shell that is already running, so this is captured at mount rather
@@ -133,6 +162,18 @@ export function TerminalPane({
 
     let disposed = false;
 
+    // Prompt positions for jumping. Markers move with the buffer, so the line
+    // numbers are read at the time of a jump rather than stored.
+    const promptMarks: IMarker[] = [];
+    let commandStartedAt: number | null = null;
+
+    const liveMarks = () => {
+      for (let index = promptMarks.length - 1; index >= 0; index -= 1) {
+        if (promptMarks[index]?.isDisposed) promptMarks.splice(index, 1);
+      }
+      return promptMarks;
+    };
+
     const chosen = openProfile.current;
     const spec: PaneSpec = {
       id,
@@ -167,9 +208,31 @@ export function TerminalPane({
           setCwd(event.path);
           break;
         case "prompt":
-          // Only the end of a command carries a status; the other marks are
-          // there for features that need prompt boundaries.
-          if (event.mark === "commandEnd") setExitCode(event.exitCode ?? null);
+          switch (event.mark) {
+            case "promptStart": {
+              const marker = term.registerMarker(0);
+              if (marker) {
+                promptMarks.push(marker);
+                if (promptMarks.length > MAX_PROMPT_MARKS) {
+                  promptMarks.shift()?.dispose();
+                }
+              }
+              break;
+            }
+            case "commandStart":
+              commandStartedAt = performance.now();
+              setDurationMs(null);
+              break;
+            case "commandEnd": {
+              const started = commandStartedAt;
+              commandStartedAt = null;
+              setExitCode(event.exitCode ?? null);
+              setDurationMs(started === null ? null : performance.now() - started);
+              break;
+            }
+            default:
+              break;
+          }
           break;
       }
     })
@@ -197,8 +260,31 @@ export function TerminalPane({
     });
     observer.observe(host);
 
+    onReady(id, {
+      focus: () => term.focus(),
+      jumpToPreviousPrompt: () => {
+        const here = term.buffer.active.viewportY;
+        const above = liveMarks()
+          .map((marker) => marker.line)
+          .filter((line) => line < here);
+        if (above.length === 0) return false;
+        term.scrollToLine(Math.max(...above));
+        return true;
+      },
+      jumpToNextPrompt: () => {
+        const here = term.buffer.active.viewportY;
+        const below = liveMarks()
+          .map((marker) => marker.line)
+          .filter((line) => line > here);
+        if (below.length === 0) return false;
+        term.scrollToLine(Math.min(...below));
+        return true;
+      },
+    });
+
     return () => {
       disposed = true;
+      onReady(id, null);
       observer.disconnect();
       dataSub.dispose();
       titleSub.dispose();
@@ -206,7 +292,7 @@ export function TerminalPane({
       term.dispose();
       termRef.current = null;
     };
-  }, [id]);
+  }, [id, onReady]);
 
   useEffect(() => {
     if (focused) termRef.current?.focus();
@@ -248,6 +334,14 @@ export function TerminalPane({
           </span>
         ) : null}
         <span className="ml-auto flex shrink-0 items-center gap-2">
+          {durationMs !== null && durationMs > 0 ? (
+            <span
+              className="text-[9px] text-ink-faint tabular-nums"
+              title="How long the last command took"
+            >
+              {formatDuration(durationMs)}
+            </span>
+          ) : null}
           {exitCode !== null && exitCode !== 0 ? (
             <span
               className="rounded border border-danger/50 bg-danger/10 px-1 text-[9px] text-danger"

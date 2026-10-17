@@ -23,7 +23,33 @@ export const DEFAULT_BINDINGS: readonly KeyBinding[] = [
   { chord: "mod+shift+w", command: "pane.close" },
   { chord: "mod+tab", command: "pane.next" },
   { chord: "mod+shift+tab", command: "pane.previous" },
+  { chord: "mod+shift+up", command: "pane.previousPrompt" },
+  { chord: "mod+shift+down", command: "pane.nextPrompt" },
 ];
+
+/**
+ * Names a person writes, mapped to what `KeyboardEvent.key` reports. A chord is
+ * written the way it is spoken; the comparison is the browser's spelling.
+ */
+const KEY_ALIASES: Record<string, string> = {
+  up: "arrowup",
+  down: "arrowdown",
+  left: "arrowleft",
+  right: "arrowright",
+  esc: "escape",
+  space: " ",
+};
+
+const KEY_LABELS: Record<string, string> = {
+  up: "\u2191",
+  down: "\u2193",
+  left: "\u2190",
+  right: "\u2192",
+};
+
+function resolveKey(key: string): string {
+  return KEY_ALIASES[key] ?? key;
+}
 
 export function isMac(): boolean {
   return navigator.userAgent.includes("Mac");
@@ -51,7 +77,7 @@ export function matchesChord(event: KeyboardEvent, chord: string): boolean {
   // Control+K on macOS.
   if (isSecondaryModifier(event)) return false;
 
-  return event.key.toLowerCase() === key;
+  return event.key.toLowerCase() === resolveKey(key);
 }
 
 /** The command an event should run, or `null`. First match wins. */
@@ -85,7 +111,9 @@ export function formatChord(chord: string): string {
     isMac() ? (MAC_LABELS[part] ?? part) : (OTHER_LABELS[part] ?? part),
   );
   labels.push(
-    key.length <= 1 ? key.toUpperCase() : key[0]!.toUpperCase() + key.slice(1),
+    key.length <= 1
+      ? key.toUpperCase()
+      : (KEY_LABELS[key] ?? key[0]!.toUpperCase() + key.slice(1)),
   );
   return labels.join(isMac() ? "" : " ");
 }

@@ -24,10 +24,11 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Shell integration: generated hooks (PowerShell via `-EncodedCommand`,
       bash via `--rcfile`) that make OSC 7 and OSC 133 fire
 - [x] Exit status of the last command, shown in the pane header
-- [ ] Command duration (bash has it via `PS0`; PowerShell needs a PSReadLine
-      hook, which is invasive and has to be measured before shipping)
-- [ ] Jump to the previous or next prompt in the scrollback (the marks are
-      parsed and delivered; nothing consumes them yet)
+- [x] Command duration from the `C` mark, for shells that emit one
+      (bash does, through `PS0`)
+- [x] Jump to the previous or next prompt in the scrollback
+- [ ] PowerShell command duration: needs a PSReadLine Enter handler, which
+      replaces a key people rely on. Not shipped while it cannot be verified.
 - [ ] Profile editor in the UI (the model and persistence are in place)
 
 ## P2 — agents
