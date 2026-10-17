@@ -7,15 +7,40 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use hp_agents::guard::{Limits, SpawnGuard};
 use hp_agents::result::{ResultScanner, RunResult};
 use hp_core::{Session, SplitDirection, Workspace};
 use hp_pty::{EventSink, PaneManager, PaneSpec, PtyEvent};
+use hp_store::audit::{AuditLog, Entry as AuditEntry};
 use hp_store::SessionStore;
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
+
+/// How long a pane may be silent before it stops counting as working. It is a
+/// display threshold, not a judgement: an agent thinking hard and an agent
+/// waiting for an answer look identical from here.
+const QUIET_AFTER: Duration = Duration::from_secs(5);
+
+/// What an agent pane looks like from outside.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum RunPhase {
+    /// No output yet.
+    Starting,
+    /// Output in the last few seconds.
+    Working,
+    /// Silent for a while. Deliberately not called "idle" and never "blocked":
+    /// the app cannot tell those apart, and will not invent a distinction.
+    Quiet,
+    /// The child printed its own `RESULT` line.
+    Reported,
+    Exited,
+    Failed,
+}
 
 /// What the app knows about an agent pane beyond its process.
 #[derive(Default)]
@@ -24,6 +49,31 @@ struct RunState {
     result: Option<RunResult>,
     /// Watches the pane's output for the child's own `RESULT` line.
     scanner: ResultScanner,
+    started_at: Option<Instant>,
+    last_output_at: Option<Instant>,
+    exit: Option<i32>,
+}
+
+impl RunState {
+    fn phase(&self) -> RunPhase {
+        // A finished process is the clearest fact available, and a report the
+        // child wrote before exiting is a claim about work, not a state.
+        if let Some(code) = self.exit {
+            return if code == 0 {
+                RunPhase::Exited
+            } else {
+                RunPhase::Failed
+            };
+        }
+        if self.result.is_some() {
+            return RunPhase::Reported;
+        }
+        match self.last_output_at {
+            None => RunPhase::Starting,
+            Some(last) if last.elapsed() < QUIET_AFTER => RunPhase::Working,
+            Some(_) => RunPhase::Quiet,
+        }
+    }
 }
 
 /// Shared application state. The PTY manager is behind an `Arc` because
@@ -42,6 +92,10 @@ struct AppState {
     /// Opening a worktree for an agent needs a directory to fork from, and the
     /// pane that has one is the pane the person is looking at.
     directories: Arc<Mutex<HashMap<String, String>>>,
+    /// Refuses a run that would exceed the app's own limits.
+    guard: Mutex<SpawnGuard>,
+    /// Append-only record of what the app did on a person's behalf.
+    audit: AuditLog,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
 }
@@ -51,6 +105,7 @@ impl AppState {
         store: SessionStore,
         integration_dir: PathBuf,
         worktree_dir: PathBuf,
+        audit: AuditLog,
         workspace: Option<Workspace>,
     ) -> Self {
         Self {
@@ -60,6 +115,8 @@ impl AppState {
             worktree_dir,
             runs: Arc::new(Mutex::new(HashMap::new())),
             directories: Arc::new(Mutex::new(HashMap::new())),
+            guard: Mutex::new(SpawnGuard::new(Limits::default())),
+            audit,
             workspace: Mutex::new(workspace),
         }
     }
@@ -207,18 +264,27 @@ fn pane_spawn(
     let sink: EventSink = Arc::new(move |event| {
         // A child's report is read from the stream it already writes to; no
         // extra channel is needed, and the terminal still receives every byte.
-        match &event {
-            PtyEvent::Data { chunk } => {
-                if let Some(run) = runs.lock().get_mut(&pane_id) {
-                    if let Some(result) = run.scanner.push(chunk) {
-                        run.result = Some(result);
+        {
+            let mut runs = runs.lock();
+            match &event {
+                PtyEvent::Data { chunk } => {
+                    if let Some(run) = runs.get_mut(&pane_id) {
+                        run.last_output_at = Some(Instant::now());
+                        if let Some(result) = run.scanner.push(chunk) {
+                            run.result = Some(result);
+                        }
                     }
                 }
+                PtyEvent::Exit { code } => {
+                    if let Some(run) = runs.get_mut(&pane_id) {
+                        run.exit = *code;
+                    }
+                }
+                _ => {}
             }
-            PtyEvent::Cwd { path } => {
-                directories.lock().insert(pane_id.clone(), path.clone());
-            }
-            _ => {}
+        }
+        if let PtyEvent::Cwd { path } = &event {
+            directories.lock().insert(pane_id.clone(), path.clone());
         }
         // A closed window means the webview is gone; dropping the event is fine.
         let _ = on_event.send(event);
@@ -364,6 +430,10 @@ struct PaneRunState {
     agent: Option<String>,
     /// The child's own last `RESULT` line. A claim, not a fact.
     result: Option<RunResult>,
+    /// What the pane looks like from outside.
+    phase: RunPhase,
+    /// Seconds since this run started.
+    elapsed_seconds: u64,
 }
 
 /// What an agent pane has reported so far.
@@ -372,7 +442,140 @@ fn pane_run_state(id: String, state: State<'_, AppState>) -> Option<PaneRunState
     state.runs.lock().get(&id).map(|run| PaneRunState {
         agent: run.agent.clone(),
         result: run.result.clone(),
+        phase: run.phase(),
+        elapsed_seconds: run
+            .started_at
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or_default(),
     })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentOpenRequest {
+    /// The pane that will host the run.
+    pane: String,
+    agent: String,
+    #[serde(default)]
+    task: String,
+    /// Confine the run to its own worktree.
+    #[serde(default)]
+    worktree: bool,
+    /// The repository to fork from, when a worktree was asked for.
+    #[serde(default)]
+    repo: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentOpen {
+    label: String,
+    program: String,
+    args: Vec<String>,
+    needs_paste: bool,
+    cwd: Option<String>,
+    branch: Option<String>,
+}
+
+/// Open an agent run: check the limits, prepare the worktree, record it.
+///
+/// This is one call rather than three the UI could interleave or skip. The
+/// limits live here, behind the command, so no amount of UI change can get
+/// around them.
+#[tauri::command]
+fn agent_open(request: AgentOpenRequest, state: State<'_, AppState>) -> Result<AgentOpen, String> {
+    let spec = hp_agents::by_id(&request.agent).ok_or_else(|| {
+        format!(
+            "unknown agent {}; known ids are {}",
+            request.agent,
+            hp_agents::known_ids().join(", ")
+        )
+    })?;
+
+    // The guard runs before anything exists, so a refusal leaves nothing
+    // behind to clean up.
+    let live = state.runs.lock().len();
+    if let Err(refusal) = state.guard.lock().request(live, Instant::now()) {
+        let message = refusal.message();
+        let _ = state.audit.append(
+            &AuditEntry::new("agent.refused", message.clone())
+                .for_agent(spec.id.to_string())
+                .for_pane(request.pane.clone()),
+        );
+        return Err(message);
+    }
+
+    let worktree = if request.worktree {
+        let repo = request.repo.clone().ok_or_else(|| {
+            "a worktree needs a repository, and that pane has not reported a \
+             directory yet: run a command in it first"
+                .to_string()
+        })?;
+
+        let branch =
+            hp_agents::worktree::branch_name(&format!("{}:{}", request.pane, request.task));
+        let created = hp_agents::worktree::create(Path::new(&repo), &state.worktree_dir, &branch)
+            .map_err(|error| error.to_string())?;
+
+        state
+            .audit
+            .append(
+                &AuditEntry::new(
+                    "worktree.create",
+                    format!("{} at {}", created.branch, created.path.display()),
+                )
+                .for_agent(spec.id.to_string())
+                .for_pane(request.pane.clone()),
+            )
+            .map_err(|error| error.to_string())?;
+
+        Some(created)
+    } else {
+        None
+    };
+
+    let (program, args) = spec.launch(&request.task);
+    let (program, args) = hp_agents::spawn_argv(program, &args);
+
+    let detail = if request.task.trim().is_empty() {
+        format!("opened {}", spec.label)
+    } else {
+        format!("opened {} with a task", spec.label)
+    };
+    state
+        .audit
+        .append(
+            &AuditEntry::new("agent.open", detail)
+                .for_agent(spec.id.to_string())
+                .for_pane(request.pane.clone()),
+        )
+        .map_err(|error| error.to_string())?;
+
+    state.runs.lock().insert(
+        request.pane.clone(),
+        RunState {
+            agent: Some(spec.id.to_string()),
+            started_at: Some(Instant::now()),
+            ..RunState::default()
+        },
+    );
+
+    Ok(AgentOpen {
+        label: spec.label.to_string(),
+        program,
+        args,
+        needs_paste: spec.needs_paste(),
+        cwd: worktree
+            .as_ref()
+            .map(|worktree| worktree.path.display().to_string()),
+        branch: worktree.map(|worktree| worktree.branch),
+    })
+}
+
+/// Where the activity log lives, so the UI can show it.
+#[tauri::command]
+fn audit_path(state: State<'_, AppState>) -> String {
+    state.audit.path().display().to_string()
 }
 
 /// Where a pane's shell last said it was, if it reports that at all.
@@ -424,6 +627,7 @@ pub fn run() {
                 store,
                 directory.join("integration"),
                 directory.join("worktrees"),
+                AuditLog::new(directory.join("audit.log")),
                 session.workspace,
             ));
             Ok(())
@@ -446,6 +650,8 @@ pub fn run() {
             agents_available,
             agent_launch,
             agent_worktree,
+            agent_open,
+            audit_path,
             pane_run_state,
             pane_cwd,
             session_load,

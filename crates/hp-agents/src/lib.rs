@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+pub mod guard;
 pub mod result;
 pub mod worktree;
 

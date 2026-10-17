@@ -37,8 +37,17 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Open an installed agent in a pane from the palette, task typed there
 - [x] Read the child's own `RESULT` line and show it as a claim
 - [x] Worktrees: create on `agent/<8>`, reuse, remove without deleting the branch
-- [x] Give an agent pane its own worktree from the UI, shown in its header
-- [ ] Status detection: working / blocked / done, per agent
+- [x] Caps: live agent panes and spawn rate, enforced behind one command
+- [x] Activity log: append-only JSON lines, refusals included
+- [x] Run phase from observation: starting, working, quiet, reported, exited,
+      failed. `quiet` is deliberately not `idle` and never `blocked`, because a
+      thinking agent and a waiting one are identical from outside a terminal.
+- [ ] Token meter and a budget guard (blocks above 85% of the 5-hour window).
+      Needs each agent CLI's own usage readout, so it is per-agent work.
+- [ ] Spawn approval card. Only meaningful once a *child* can ask for a pane;
+      today the person clicking the palette is already the approver.
+- [ ] Remove the superseded `agent_launch` and `agent_worktree` commands, now
+      that `agent_open` does both behind the guard.
 - [ ] Worktree housekeeping: offer to remove a finished run's worktree, and
       tolerate a directory that is still held instead of failing silently.
       One leftover empty directory remains from the verification run: a handle

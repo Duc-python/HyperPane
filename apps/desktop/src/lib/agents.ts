@@ -1,4 +1,4 @@
-import { agentLaunch, type AgentInfo, type RunResult } from "./ipc";
+import { agentOpen, type AgentInfo, type RunResult } from "./ipc";
 
 /** Everything a pane needs to start an agent. */
 export interface PaneAgent {
@@ -14,21 +14,30 @@ export interface PaneAgent {
   branch: string | null;
 }
 
-/** Resolve one catalogue agent into pane arguments. */
-export async function preparePaneAgent(
+/** Ask the app to open a run, and turn its answer into pane arguments. */
+export async function openPaneAgent(
+  paneId: string,
   agent: AgentInfo,
   task: string,
-  worktree: { path: string; branch: string } | null,
+  repo: string | null,
+  worktree: boolean,
 ): Promise<PaneAgent> {
-  const launch = await agentLaunch(agent.id, task);
+  const opened = await agentOpen({
+    pane: paneId,
+    agent: agent.id,
+    task,
+    worktree,
+    repo,
+  });
+
   return {
     id: agent.id,
-    label: launch.label,
-    program: launch.program,
-    args: launch.args,
-    needsPaste: launch.needsPaste,
-    cwd: worktree?.path ?? null,
-    branch: worktree?.branch ?? null,
+    label: opened.label,
+    program: opened.program,
+    args: opened.args,
+    needsPaste: opened.needsPaste,
+    cwd: opened.cwd,
+    branch: opened.branch,
   };
 }
 

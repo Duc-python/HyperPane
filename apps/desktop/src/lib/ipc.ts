@@ -164,11 +164,22 @@ export interface RunResult {
   tests: "pass" | "fail" | "none";
 }
 
+/** Mirrors the app's `RunPhase`. */
+export type RunPhase =
+  | "starting"
+  | "working"
+  | "quiet"
+  | "reported"
+  | "exited"
+  | "failed";
+
 /** Mirrors the app's `PaneRunState`. */
 export interface PaneRunState {
   agent: string | null;
   /** The child's own last RESULT line. A claim, not a fact. */
   result: RunResult | null;
+  phase: RunPhase;
+  elapsedSeconds: number;
 }
 
 /** Which catalogue agents are installed on this machine. */
@@ -190,6 +201,39 @@ export interface WorktreeInfo {
   path: string;
   branch: string;
 }
+
+/** What the app needs to open one agent run. */
+export interface AgentOpenRequest {
+  /** The pane that will host the run. */
+  pane: string;
+  agent: string;
+  task?: string;
+  worktree?: boolean;
+  /** The repository to fork from, when a worktree was asked for. */
+  repo?: string | null;
+}
+
+/** Mirrors the app's `AgentOpen`. */
+export interface AgentOpen {
+  label: string;
+  program: string;
+  args: string[];
+  needsPaste: boolean;
+  cwd: string | null;
+  branch: string | null;
+}
+
+/**
+ * Open an agent run.
+ *
+ * One call, not three the UI could interleave: the app's limits and the
+ * activity log live behind this, so no UI change can get around them.
+ */
+export const agentOpen = (request: AgentOpenRequest) =>
+  invoke<AgentOpen>("agent_open", { request });
+
+/** Where the activity log lives. */
+export const auditPath = () => invoke<string>("audit_path");
 
 export const agentsAvailable = () => invoke<AgentInfo[]>("agents_available");
 

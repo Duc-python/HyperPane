@@ -6,6 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod audit;
+
 use hp_core::{Session, SESSION_VERSION};
 use thiserror::Error;
 

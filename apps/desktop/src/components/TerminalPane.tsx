@@ -14,6 +14,7 @@ import {
   type PaneSpec,
   type Profile,
   type PtyEvent,
+  type RunPhase,
 } from "../lib/ipc";
 
 type Status = "starting" | "live" | "exited" | "failed";
@@ -89,6 +90,22 @@ const STATUS_DOT: Record<Status, string> = {
 const STATUS_LABEL: Record<Status, string> = {
   starting: "starting",
   live: "live",
+  exited: "exited",
+  failed: "failed",
+};
+
+/**
+ * What an agent pane is doing, from the app's own observation.
+ *
+ * `quiet` is not `idle` and never `blocked`: a thinking agent, a waiting one
+ * and a finished one that forgot to report all look the same from outside a
+ * terminal. The header says what is known and stops there.
+ */
+const PHASE_LABEL: Record<RunPhase, string> = {
+  starting: "starting",
+  working: "working",
+  quiet: "quiet",
+  reported: "reported",
   exited: "exited",
   failed: "failed",
 };
@@ -429,8 +446,15 @@ export function TerminalPane({
               exit {exitCode}
             </span>
           ) : null}
-          <span className="text-[10px] tracking-wide text-ink-faint uppercase">
-            {STATUS_LABEL[status]}
+          <span
+            className="text-[10px] tracking-wide text-ink-faint uppercase"
+            title={
+              agent && runState
+                ? `This run has been going for ${runState.elapsedSeconds}s`
+                : undefined
+            }
+          >
+            {agent && runState ? PHASE_LABEL[runState.phase] : STATUS_LABEL[status]}
           </span>
         </span>
         {canClose ? (

@@ -7,9 +7,9 @@ import {
   type ReactNode,
 } from "react";
 import {
-  agentWorktree,
   agentsAvailable,
   appInfo,
+  auditPath,
   paneClose,
   paneCwd,
   paneIds,
@@ -32,7 +32,7 @@ import {
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
 import { shortenPath } from "./lib/paths";
-import { preparePaneAgent, type PaneAgent } from "./lib/agents";
+import { openPaneAgent, type PaneAgent } from "./lib/agents";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
@@ -71,6 +71,7 @@ export default function App() {
   } | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessionFile, setSessionFile] = useState<string | null>(null);
+  const [auditFile, setAuditFile] = useState<string | null>(null);
 
   const nextPane = useRef(1);
   const workspaceRef = useRef<Workspace | null>(null);
@@ -94,6 +95,9 @@ export default function App() {
 
       const available = await agentsAvailable().catch(() => []);
       if (!cancelled) setAgents(available);
+
+      const log = await auditPath().catch(() => null);
+      if (!cancelled) setAuditFile(log);
 
       try {
         const session = await sessionLoad();
@@ -238,19 +242,10 @@ export default function App() {
       const id = `p${nextPane.current++}`;
       try {
         // The pane the person is looking at is the one with a repository in it,
-        // and its shell has already told us where that is.
-        let worktree: { path: string; branch: string } | null = null;
-        if (useWorktree) {
-          const repo = await paneCwd(target);
-          if (!repo) {
-            throw new Error(
-              "that pane has not reported a directory yet; run a command in it first",
-            );
-          }
-          worktree = await agentWorktree(repo, `${target}:${task}`);
-        }
-
-        const prepared = await preparePaneAgent(agent, task, worktree);
+        // and its shell has already told us where that is. A worktree with no
+        // repository is refused by the app, with a sentence that says so.
+        const repo = useWorktree ? await paneCwd(target) : null;
+        const prepared = await openPaneAgent(id, agent, task, repo, useWorktree);
         // Both updates land in one render, so the new pane mounts with its
         // agent already known rather than starting a shell first.
         setPaneAgents((map) => ({ ...map, [id]: prepared }));
@@ -539,7 +534,12 @@ export default function App() {
         {sessionFile ? (
           <span
             className="ml-auto truncate"
-            title={`Layout and profiles are stored in ${sessionFile}`}
+            title={[
+              `Layout and profiles: ${sessionFile}`,
+              auditFile ? `Activity log: ${auditFile}` : null,
+            ]
+              .filter(Boolean)
+              .join("\n")}
           >
             session saved
           </span>
