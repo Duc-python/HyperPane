@@ -89,8 +89,20 @@ green (tests, clippy, typecheck, and the app actually running).
 
 ## P4 — plugins
 
-- [ ] MCP server host, `plugins.call`
-- [ ] Plugin SDK + signed manifest
+- [x] `hp-mcp`: the MCP client. Both protocol eras — modern per-request `_meta`
+      with `server/discover` as the probe, and the `initialize` handshake for
+      `2025-11-25` and earlier — with tools listed and called, pagination
+      followed, and refusals, junk on stdout, silence, wrong ids, oversized
+      messages and a server that will not exit all reported for what they are.
+      Tested against a scripted server and against a real one.
+- [ ] The app side: `plugins.json` for which servers to run, `plugins_list` and
+      `plugins_call`, and one audit line per call. Note that a server installed
+      through npm is a `.cmd` shim, which the process API will not start by
+      name: the app layer resolves it exactly as `pane_spawn` does.
+- [ ] Plugin SDK + signed manifest.
+- [ ] A frontend test harness. The activity log is what stands in for one today,
+      and the pane-session bug was found by reading it — which is a poor
+      substitute for a test that fails.
 
 ## P5 — control rooms
 
