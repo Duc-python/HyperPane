@@ -17,6 +17,9 @@ param(
     # capture, so a shot can show more than the initial state. "^+e" is
     # Ctrl+Shift+E.
     [string[]]$Keys = @(),
+    # How many times to send the whole key list. A soak run repeats the same
+    # split/close cycle and asks whether the app is still answering afterwards.
+    [int]$Repeat = 1,
     [int]$KeyDelayMs = 1500,
     # How long to let the app settle after the last keystroke before sampling.
     [int]$SettleMs = 700,
@@ -200,29 +203,31 @@ if ($Keys.Count -gt 0) {
         exit 4
     }
 
-    foreach ($sequence in $Keys) {
-        # Re-acquire the foreground before every sequence. A window can lose it
-        # between keystrokes, and typing an ENTER into whatever took it is not a
-        # mistake worth making.
-        $held = $false
-        for ($attempt = 1; $attempt -le 6; $attempt++) {
-            if ([WinCap]::GetForegroundWindow() -eq $handle) { $held = $true; break }
-            [void][WinCap]::ForceForeground($handle)
-            Start-Sleep -Milliseconds 350
-        }
-        if (-not $held) {
-            Write-Warning "the app is not in the foreground; stopping before '$sequence'"
-            break
-        }
+    for ($cycle = 1; $cycle -le $Repeat; $cycle++) {
+        foreach ($sequence in $Keys) {
+            # Re-acquire the foreground before every sequence. A window can lose
+            # it between keystrokes, and typing an ENTER into whatever took it
+            # is not a mistake worth making.
+            $held = $false
+            for ($attempt = 1; $attempt -le 6; $attempt++) {
+                if ([WinCap]::GetForegroundWindow() -eq $handle) { $held = $true; break }
+                [void][WinCap]::ForceForeground($handle)
+                Start-Sleep -Milliseconds 350
+            }
+            if (-not $held) {
+                Write-Warning "the app is not in the foreground; stopping before '$sequence'"
+                break
+            }
 
-        Write-Host "sending keys '$sequence'"
-        [System.Windows.Forms.SendKeys]::SendWait($sequence)
-        Start-Sleep -Milliseconds $KeyDelayMs
+            Write-Host "cycle $cycle/$Repeat  keys '$sequence'"
+            [System.Windows.Forms.SendKeys]::SendWait($sequence)
+            Start-Sleep -Milliseconds $KeyDelayMs
 
-        $process.Refresh()
-        if ($process.HasExited) {
-            Write-Host "the app exited after '$sequence', with code $($process.ExitCode)"
-            exit 1
+            $process.Refresh()
+            if ($process.HasExited) {
+                Write-Host "the app exited after '$sequence', with code $($process.ExitCode)"
+                exit 1
+            }
         }
     }
 
@@ -233,7 +238,8 @@ if ($Keys.Count -gt 0) {
         Write-Host "the app exited while settling, with code $($process.ExitCode)"
         exit 1
     }
-    Write-Host "the app is still alive after the keys"
+    Write-Host ("the app is still alive after the keys: {0} handles, {1} threads" -f `
+        $process.HandleCount, $process.Threads.Count)
 }
 
 # GetWindowRect includes the drop shadow on Windows 10 and later, so it would
