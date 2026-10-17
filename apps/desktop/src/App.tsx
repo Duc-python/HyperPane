@@ -46,6 +46,7 @@ import { describeResult, openPaneAgent, type PaneAgent } from "./lib/agents";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
+import { ProfileEditor } from "./components/ProfileEditor";
 import { TeamPlanPanel } from "./components/TeamPlanPanel";
 import { TeamRunPanel } from "./components/TeamRunPanel";
 import type { PaneController } from "./components/TerminalPane";
@@ -78,6 +79,8 @@ export default function App() {
   const [paneProfiles, setPaneProfiles] = useState<Record<string, string>>({});
   const [paneAgents, setPaneAgents] = useState<Record<string, PaneAgent>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** Set while the profile editor is on screen. */
+  const [profilesOpen, setProfilesOpen] = useState(false);
   /**
    * Set while the palette is asking for a task. The worktree flag is decided
    * when the agent is picked, because it is part of which entry was picked.
@@ -289,13 +292,6 @@ export default function App() {
     [info],
   );
 
-  /**
-   * Open the first wave of a team.
-   *
-   * The frontend works out how many panes the wave needs from the same plan
-   * the person just read, allocates the ids, and hands them over. The app
-   * checks the count and refuses a mismatch rather than opening part of a wave.
-   */
   /** Register the panes a wave opened and lay them out beside the person. */
   const placeWave = useCallback(
     async (members: StartedMember[]) => {
@@ -450,6 +446,13 @@ export default function App() {
         group: "App",
         hint: hint("app.palette"),
         run: () => setPaletteOpen((open) => !open),
+      },
+      {
+        id: "app.profiles",
+        title: "Profiles…",
+        group: "App",
+        hint: hint("app.profiles"),
+        run: () => setProfilesOpen(true),
       },
       {
         id: "pane.splitRight",
@@ -676,9 +679,14 @@ export default function App() {
             </button>
           ) : null}
           {activeProfile ? (
-            <span title={activeProfile.shell ?? "platform default shell"}>
+            <button
+              type="button"
+              onClick={() => setProfilesOpen(true)}
+              title={`${activeProfile.shell ?? "platform default shell"} — click to edit profiles`}
+              className="rounded px-1 py-0.5 transition-colors hover:bg-overlay hover:text-ink"
+            >
               {activeProfile.name}
-            </span>
+            </button>
           ) : null}
           {workspace ? (
             <span>
@@ -816,6 +824,21 @@ export default function App() {
           teamKey={teamRun.key}
           status={teamRun}
           onClose={() => setShowRun(false)}
+        />
+      ) : null}
+
+      {profilesOpen ? (
+        <ProfileEditor
+          profiles={profiles}
+          defaultProfile={defaultProfile}
+          platformDefaultShell={info?.defaultShell ?? null}
+          onChange={setProfiles}
+          onDefaultChange={setDefaultProfile}
+          onOpen={(id) => {
+            setProfilesOpen(false);
+            void splitWith("row", id);
+          }}
+          onClose={() => setProfilesOpen(false)}
         />
       ) : null}
 

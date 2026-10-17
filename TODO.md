@@ -33,7 +33,8 @@ green (tests, clippy, typecheck, and the app actually running).
       mirrors the layout tree, so a split unmounts and remounts panes.
 - [ ] PowerShell command duration: needs a PSReadLine Enter handler, which
       replaces a key people rely on. Not shipped while it cannot be verified.
-- [ ] Profile editor in the UI (the model and persistence are in place)
+- [x] Profile editor in the UI: `mod+,`, the `Profiles…` palette entry, or the
+      profile name in the title bar
 
 ## P2 — agents
 

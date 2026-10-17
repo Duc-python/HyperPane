@@ -18,6 +18,7 @@ export const DEFAULT_BINDINGS: readonly KeyBinding[] = [
   // Control+Shift+P, not Control+K: Control+K is a real terminal key
   // (kill-line in readline), and stealing it would break every shell.
   { chord: "mod+shift+p", command: "app.palette" },
+  { chord: "mod+,", command: "app.profiles" },
   { chord: "mod+shift+e", command: "pane.splitRight" },
   { chord: "mod+shift+o", command: "pane.splitDown" },
   { chord: "mod+shift+w", command: "pane.close" },
