@@ -352,6 +352,48 @@ export interface TeamStart {
 export const teamStart = (request: TeamStartRequest) =>
   invoke<TeamStart>("team_start", { request });
 
+export type Hold = "checksReported" | "resultReady";
+
+export interface TeamStatus {
+  key: string;
+  title: string;
+  wave: number;
+  /** Panes of the current wave that are still alive. */
+  running: number;
+  holding: Hold | null;
+  holdingMessage: string | null;
+  nextWave: number | null;
+  nextWavePanes: number;
+  wavesRemaining: number;
+}
+
+export type TeamAdvance =
+  | { kind: "waiting"; running: number }
+  | {
+      kind: "ready";
+      wave: number;
+      members: StartedMember[];
+      wavesRemaining: number;
+    }
+  | { kind: "held"; reason: string }
+  | { kind: "finished" };
+
+/** Where the team run is, without moving it. */
+export const teamStatus = () => invoke<TeamStatus | null>("team_status");
+
+/**
+ * Move the run on if it can be moved on.
+ *
+ * The frontend calls this when it sees the wave's panes finish. The decision
+ * lives in the app, so calling it early gets `waiting` rather than a run that
+ * skipped a dependency.
+ */
+export const teamAdvance = (panes: string[]) =>
+  invoke<TeamAdvance>("team_advance", { panes });
+
+/** Clear the hold the run is sitting on. Returns the hold that was cleared. */
+export const teamConfirm = () => invoke<Hold | null>("team_confirm");
+
 export const agentsAvailable = () => invoke<AgentInfo[]>("agents_available");
 
 export const agentLaunch = (agent: string, task: string) =>

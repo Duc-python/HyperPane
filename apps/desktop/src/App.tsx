@@ -17,9 +17,12 @@ import {
   sessionLoad,
   sessionPath,
   sessionSave,
+  teamAdvance,
+  teamConfirm,
   teamPlan,
   teamsList,
   teamStart,
+  teamStatus,
   workspaceClosePane,
   workspaceCycleFocus,
   workspaceInit,
@@ -32,7 +35,9 @@ import {
   type Profile,
   type Session,
   type SplitDirection,
+  type StartedMember,
   type TeamPreset,
+  type TeamStatus,
   type Workspace,
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
@@ -84,6 +89,8 @@ export default function App() {
   const [teams, setTeams] = useState<TeamPreset[]>([]);
   /** Set while the plan for a team is on screen. */
   const [teamKey, setTeamKey] = useState<string | null>(null);
+  /** Where the team run in progress is, refreshed while it goes. */
+  const [teamRun, setTeamRun] = useState<TeamStatus | null>(null);
   const [sessionFile, setSessionFile] = useState<string | null>(null);
   const [auditFile, setAuditFile] = useState<string | null>(null);
 
@@ -286,6 +293,48 @@ export default function App() {
    * the person just read, allocates the ids, and hands them over. The app
    * checks the count and refuses a mismatch rather than opening part of a wave.
    */
+  /** Register the panes a wave opened and lay them out beside the person. */
+  const placeWave = useCallback(
+    async (members: StartedMember[]) => {
+      const current = workspaceRef.current;
+      if (!current) return;
+      const target = current.focused ?? paneIds(current.layout)[0];
+      if (!target) return;
+
+      setPaneAgents((map) => {
+        const next = { ...map };
+        for (const member of members) {
+          next[member.pane] = {
+            id: member.agent,
+            label: member.label,
+            program: member.program,
+            args: member.args,
+            needsPaste: member.needsPaste,
+            cwd: member.cwd,
+            branch: member.branch,
+          };
+        }
+        return next;
+      });
+
+      // Every member splits from the pane the person is in, so the wave lands
+      // beside it rather than nesting into the last member opened.
+      let workspace = current;
+      for (const member of members) {
+        workspace = await workspaceSplit(target, "row", member.pane);
+      }
+      setWorkspace(workspace);
+    },
+    [],
+  );
+
+  /**
+   * Open the first wave of a team.
+   *
+   * The frontend works out how many panes the wave needs from the same plan
+   * the person just read, allocates the ids, and hands them over. The app
+   * checks the count and refuses a mismatch rather than opening part of a wave.
+   */
   const startTeam = useCallback(async (key: string, task: string) => {
     const current = workspaceRef.current;
     if (!current) return;
@@ -312,34 +361,13 @@ export default function App() {
         repo: await paneCwd(target),
       });
 
-      setPaneAgents((map) => {
-        const next = { ...map };
-        for (const member of started.members) {
-          next[member.pane] = {
-            id: member.agent,
-            label: member.label,
-            program: member.program,
-            args: member.args,
-            needsPaste: member.needsPaste,
-            cwd: member.cwd,
-            branch: member.branch,
-          };
-        }
-        return next;
-      });
-
-      // Every member splits from the pane the person is in, so the wave lands
-      // beside it rather than nesting into the last member opened.
-      let workspace = current;
-      for (const member of started.members) {
-        workspace = await workspaceSplit(target, "row", member.pane);
-      }
-      setWorkspace(workspace);
+      await placeWave(started.members);
+      setTeamRun(await teamStatus());
       setTeamKey(null);
     } catch (cause) {
       setError(String(cause));
     }
-  }, []);
+  }, [placeWave]);
 
   // Live panes, by id, so a command can act on the focused one. Panes register
   // themselves when their terminal exists and clear on the way out.
@@ -361,6 +389,43 @@ export default function App() {
     },
     [],
   );
+
+  /** One poll of the run, kept out of the effect so it can be awaited. */
+  const advancing = useRef(false);
+  const pollTeam = useCallback(async () => {
+    // Advancing takes a round trip, so a poll could overlap the previous one
+    // and ask to open the same wave twice. The app refuses the second, but
+    // not asking is simpler than handling a refusal that means nothing.
+    if (advancing.current) return;
+    advancing.current = true;
+    try {
+      const status = await teamStatus();
+      setTeamRun(status);
+      if (!status || status.holding || status.running > 0) return;
+
+      // The last advance is the one that reports `finished` or raises a hold,
+      // so it is asked for like any other. `nextWavePanes` is zero when there
+      // is nothing left, and the app never answers that with a wave to open.
+      const ids = Array.from(
+        { length: status.nextWavePanes },
+        () => `p${nextPane.current++}`,
+      );
+      const outcome = await teamAdvance(ids);
+      if (outcome.kind === "ready") {
+        await placeWave(outcome.members);
+      }
+      setTeamRun(await teamStatus());
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      advancing.current = false;
+    }
+  }, [placeWave]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => void pollTeam(), 2000);
+    return () => window.clearInterval(timer);
+  }, [pollTeam]);
 
   const commands = useMemo<Command[]>(() => {
     const hint = (id: string) => {
@@ -494,6 +559,15 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, []);
 
+  const confirmTeam = useCallback(async () => {
+    try {
+      await teamConfirm();
+      setTeamRun(await teamStatus());
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }, []);
+
   const paneCount = workspace ? paneIds(workspace.layout).length : 0;
   const canClose = paneCount > 1;
   const activeProfile = profiles.find(
@@ -562,6 +636,17 @@ export default function App() {
         </button>
 
         <div className="ml-auto flex items-center gap-3 text-[10px] text-ink-faint">
+          {teamRun ? (
+            <span
+              title={
+                teamRun.holdingMessage ??
+                `${teamRun.wavesRemaining} wave(s) after this one`
+              }
+            >
+              team {teamRun.title} · wave {teamRun.wave}
+              {teamRun.running > 0 ? ` · ${teamRun.running} running` : ""}
+            </span>
+          ) : null}
           {activeProfile ? (
             <span title={activeProfile.shell ?? "platform default shell"}>
               {activeProfile.name}
@@ -586,6 +671,20 @@ export default function App() {
             className="ml-auto rounded px-1.5 py-0.5 hover:bg-danger/20"
           >
             dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {teamRun?.holding ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1.5 text-[11px] text-warn">
+          <span className="font-semibold">{teamRun.title}</span>
+          <span className="truncate">{teamRun.holdingMessage}</span>
+          <button
+            type="button"
+            onClick={() => void confirmTeam()}
+            className="ml-auto shrink-0 rounded border border-warn/50 px-2 py-0.5 transition-colors hover:bg-warn/20"
+          >
+            continue
           </button>
         </div>
       ) : null}

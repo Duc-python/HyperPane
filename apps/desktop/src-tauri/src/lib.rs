@@ -15,6 +15,7 @@ use hp_core::{Session, SplitDirection, Workspace};
 use hp_pty::{EventSink, PaneManager, PaneSpec, PtyEvent};
 use hp_store::audit::{AuditLog, Entry as AuditEntry};
 use hp_store::SessionStore;
+use hp_teams::{Advance, Hold, PlannedMember};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -76,6 +77,23 @@ impl RunState {
     }
 }
 
+/// A team run the app is keeping track of.
+///
+/// One at a time, and only while it is going: a run is a sequence of waves and
+/// it makes no sense to have two of them competing for the same panes.
+struct TeamRun {
+    key: String,
+    title: String,
+    /// What the person asked the run to do, kept for the next wave's brief.
+    task: String,
+    /// The repository a member's worktree is forked from.
+    repo: Option<String>,
+    plan: Vec<PlannedMember>,
+    progress: hp_teams::RunState,
+    /// Panes opened for the wave in progress.
+    panes: Vec<String>,
+}
+
 /// Shared application state. The PTY manager is behind an `Arc` because
 /// channel callbacks outlive the command that created them.
 struct AppState {
@@ -96,6 +114,8 @@ struct AppState {
     guard: Mutex<SpawnGuard>,
     /// Append-only record of what the app did on a person's behalf.
     audit: AuditLog,
+    /// The team run in progress, if there is one.
+    team: Mutex<Option<TeamRun>>,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
 }
@@ -117,6 +137,7 @@ impl AppState {
             directories: Arc::new(Mutex::new(HashMap::new())),
             guard: Mutex::new(SpawnGuard::new(Limits::default())),
             audit,
+            team: Mutex::new(None),
             workspace: Mutex::new(workspace),
         }
     }
@@ -667,51 +688,33 @@ struct TeamStart {
     waves_remaining: usize,
 }
 
-/// Start the first wave of a team that has anything to spawn.
+/// Open every member of one wave.
 ///
-/// The leader is the pane the person is already in, so a run begins at the
-/// first wave holding a member that is not one. Every member goes through the
-/// same reservation and the same worktree preparation as a palette run, which
-/// is what stops a team from being a way around the app's own limits.
-#[tauri::command]
-fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<TeamStart, String> {
-    let file = hp_teams::PresetFile::parse(hp_teams::SHIPPED).map_err(|e| e.to_string())?;
-    let preset = file
-        .team(&request.key)
-        .ok_or_else(|| format!("no team called {}", request.key))?;
-
-    let planned = hp_teams::plan(preset, &installed_agents()).map_err(|e| e.to_string())?;
-
-    let spawnable = |member: &&hp_teams::PlannedMember| member.kind != hp_teams::RoleKind::Leader;
-
-    let Some(wave) = planned
+/// The whole wave is reserved before any of it starts, so a refusal costs
+/// nothing rather than leaving half a wave running.
+fn open_wave(
+    state: &AppState,
+    preset: &hp_teams::Preset,
+    plan: &[PlannedMember],
+    wave: u32,
+    task: &str,
+    repo: Option<&str>,
+    panes: &[String],
+) -> Result<Vec<StartedMember>, String> {
+    let members: Vec<&PlannedMember> = plan
         .iter()
-        .filter(spawnable)
-        .map(|member| member.wave)
-        .min()
-    else {
-        return Err(format!(
-            "{} has nothing to spawn: every role is a leader",
-            preset.title_en()
-        ));
-    };
-
-    let members: Vec<&hp_teams::PlannedMember> = planned
-        .iter()
-        .filter(|member| member.wave == wave && spawnable(member))
+        .filter(|member| member.wave == wave && member.kind != hp_teams::RoleKind::Leader)
         .collect();
 
-    if request.panes.len() != members.len() {
+    if panes.len() != members.len() {
         return Err(format!(
             "wave {wave} opens {} panes and {} were allocated",
             members.len(),
-            request.panes.len()
+            panes.len()
         ));
     }
 
-    // The whole wave is reserved before any of it starts, so a refusal costs
-    // nothing rather than leaving half a wave running.
-    if let Err(message) = reserve_runs(&state, members.len()) {
+    if let Err(message) = reserve_runs(state, members.len()) {
         let _ = state.audit.append(
             &AuditEntry::new("team.refused", message.clone()).for_agent(preset.key.clone()),
         );
@@ -719,16 +722,16 @@ fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<T
     }
 
     let mut started = Vec::new();
-    for (member, pane) in members.iter().zip(request.panes.iter()) {
+    for (member, pane) in members.iter().zip(panes.iter()) {
         let worktree = if member.worktree {
-            let repo = request.repo.as_deref().ok_or_else(|| {
+            let repo = repo.ok_or_else(|| {
                 format!(
                     "role {} wants its own worktree and no repository was given",
                     member.label
                 )
             })?;
             Some(prepare_worktree(
-                &state,
+                state,
                 pane,
                 &member.agent,
                 repo,
@@ -747,13 +750,13 @@ fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<T
             purpose: &preset.purpose_en(),
             role_label: &member.label,
             focus: &member.focus,
-            task: &request.task,
+            task,
             read_only: member.read_only,
             worktree: worktree_path.as_deref(),
             wave: member.wave,
         });
 
-        let opened = open_reserved(&state, pane, &member.agent, &brief, worktree.as_ref())?;
+        let opened = open_reserved(state, pane, &member.agent, &brief, worktree.as_ref())?;
 
         started.push(StartedMember {
             pane: pane.clone(),
@@ -769,31 +772,253 @@ fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<T
         });
     }
 
-    let waves_remaining = planned
-        .iter()
-        .filter(|member| member.wave > wave && member.kind != hp_teams::RoleKind::Leader)
-        .map(|member| member.wave)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
+    Ok(started)
+}
 
+/// How many of a wave's panes are still alive.
+///
+/// A pane that is gone counts as not running: a person closing a pane has to
+/// move the run on, or the wave would wait forever for something that no longer
+/// exists.
+fn running_panes(runs: &HashMap<String, RunState>, panes: &[String]) -> usize {
+    panes
+        .iter()
+        .filter(|pane| {
+            runs.get(*pane)
+                .map(|run| run.exit.is_none())
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Start the first wave of a team that has anything to spawn.
+///
+/// The leader is the pane the person is already in, so a run begins at the
+/// first wave holding a member that is not one. Every member goes through the
+/// same reservation and the same worktree preparation as a palette run, which
+/// is what stops a team from being a way around the app's own limits.
+#[tauri::command]
+fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<TeamStart, String> {
+    let file = hp_teams::PresetFile::parse(hp_teams::SHIPPED).map_err(|e| e.to_string())?;
+    let preset = file
+        .team(&request.key)
+        .ok_or_else(|| format!("no team called {}", request.key))?;
+
+    let planned = hp_teams::plan(preset, &installed_agents()).map_err(|e| e.to_string())?;
+
+    let Some(progress) = hp_teams::RunState::start(&planned) else {
+        return Err(format!(
+            "{} has nothing to spawn: every role is a leader",
+            preset.title_en()
+        ));
+    };
+
+    let wave = progress.wave;
+    let members = open_wave(
+        &state,
+        preset,
+        &planned,
+        wave,
+        &request.task,
+        request.repo.as_deref(),
+        &request.panes,
+    )?;
+
+    let waves_remaining = progress.pending.len();
     let _ = state.audit.append(
         &AuditEntry::new(
             "team.start",
             format!(
                 "wave {wave}: {} member(s), {waves_remaining} wave(s) left",
-                started.len()
+                members.len()
             ),
         )
         .for_agent(preset.key.clone()),
     );
 
+    *state.team.lock() = Some(TeamRun {
+        key: preset.key.clone(),
+        title: preset.title_en(),
+        task: request.task,
+        repo: request.repo,
+        plan: planned,
+        progress,
+        panes: request.panes.clone(),
+    });
+
     Ok(TeamStart {
         key: preset.key.clone(),
         title: preset.title_en(),
         wave,
-        members: started,
+        members,
         waves_remaining,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamStatus {
+    key: String,
+    title: String,
+    wave: u32,
+    /// Panes of the current wave that are still alive.
+    running: usize,
+    /// What the run is waiting for, when it is waiting on a person.
+    holding: Option<Hold>,
+    holding_message: Option<String>,
+    /// The wave the run would open next, once the current one is done.
+    next_wave: Option<u32>,
+    /// How many panes that wave needs.
+    next_wave_panes: usize,
+    waves_remaining: usize,
+}
+
+/// Where the team run is, without moving it.
+#[tauri::command]
+fn team_status(state: State<'_, AppState>) -> Option<TeamStatus> {
+    // Copied out before anything else is locked, so the two locks are never
+    // held at once and there is no order to get wrong.
+    let (key, title, wave, holding, pending, plan, panes) = {
+        let team = state.team.lock();
+        let run = team.as_ref()?;
+        (
+            run.key.clone(),
+            run.title.clone(),
+            run.progress.wave,
+            run.progress.holding(),
+            run.progress.pending.clone(),
+            run.plan.clone(),
+            run.panes.clone(),
+        )
+    };
+
+    let running = running_panes(&state.runs.lock(), &panes);
+    let next_wave = pending.first().copied();
+
+    Some(TeamStatus {
+        key,
+        title,
+        wave,
+        running,
+        holding,
+        holding_message: holding.map(|hold| hold.message().to_string()),
+        next_wave,
+        next_wave_panes: plan
+            .iter()
+            .filter(|member| {
+                Some(member.wave) == next_wave && member.kind != hp_teams::RoleKind::Leader
+            })
+            .count(),
+        waves_remaining: pending.len(),
+    })
+}
+
+/// What moving the run on produced.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum TeamAdvance {
+    Waiting {
+        running: usize,
+    },
+    Ready {
+        wave: u32,
+        members: Vec<StartedMember>,
+        waves_remaining: usize,
+    },
+    Held {
+        reason: String,
+    },
+    Finished,
+}
+
+/// Move the run on if it can be moved on.
+///
+/// The frontend calls this when it sees the wave's panes finish. What decides
+/// whether that is allowed lives here, so a UI that calls it early gets
+/// `Waiting` rather than a run that skips a dependency.
+#[tauri::command]
+fn team_advance(panes: Vec<String>, state: State<'_, AppState>) -> Result<TeamAdvance, String> {
+    let file = hp_teams::PresetFile::parse(hp_teams::SHIPPED).map_err(|e| e.to_string())?;
+
+    // Taken out so the decision can hold it mutably, and put back below
+    // whatever the answer is.
+    let mut run = state
+        .team
+        .lock()
+        .take()
+        .ok_or_else(|| "no team run is going".to_string())?;
+
+    let preset = file
+        .team(&run.key)
+        .ok_or_else(|| format!("no team called {}", run.key))?
+        .clone();
+
+    let running = running_panes(&state.runs.lock(), &run.panes);
+    let before = run.progress.clone();
+
+    let outcome = match run.progress.advance(&preset, &run.plan, running) {
+        Advance::Waiting { running } => TeamAdvance::Waiting { running },
+        Advance::Held(hold) => TeamAdvance::Held {
+            reason: hold.message().to_string(),
+        },
+        Advance::Finished => TeamAdvance::Finished,
+        Advance::Ready { wave } => {
+            match open_wave(
+                &state,
+                &preset,
+                &run.plan,
+                wave,
+                &run.task,
+                run.repo.as_deref(),
+                &panes,
+            ) {
+                Ok(members) => {
+                    run.panes = panes;
+                    let _ = state.audit.append(
+                        &AuditEntry::new(
+                            "team.wave",
+                            format!("wave {wave}: {} member(s)", members.len()),
+                        )
+                        .for_agent(run.key.clone()),
+                    );
+                    TeamAdvance::Ready {
+                        wave,
+                        members,
+                        waves_remaining: run.progress.pending.len(),
+                    }
+                }
+                Err(message) => {
+                    // Nothing opened, so the run goes back where it was rather
+                    // than claiming a wave it never started.
+                    run.progress = before;
+                    *state.team.lock() = Some(run);
+                    return Err(message);
+                }
+            }
+        }
+    };
+
+    match outcome {
+        TeamAdvance::Finished => {
+            let _ = state.audit.append(
+                &AuditEntry::new("team.finished", "the last wave finished")
+                    .for_agent(run.key.clone()),
+            );
+        }
+        _ => *state.team.lock() = Some(run),
+    }
+
+    Ok(outcome)
+}
+
+/// A person cleared the hold the run was sitting on.
+#[tauri::command]
+fn team_confirm(state: State<'_, AppState>) -> Option<Hold> {
+    let mut team = state.team.lock();
+    let run = team.as_mut()?;
+    let was = run.progress.holding();
+    run.progress.confirm();
+    was
 }
 
 /// Where the activity log lives, so the UI can show it.
@@ -972,6 +1197,9 @@ pub fn run() {
             teams_list,
             team_plan,
             team_start,
+            team_status,
+            team_advance,
+            team_confirm,
             pane_run_state,
             pane_cwd,
             session_load,
