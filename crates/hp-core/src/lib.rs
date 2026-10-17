@@ -351,9 +351,13 @@ impl Session {
             .or_else(|| self.profiles.first())
     }
 
-    /// Drop a workspace that has no usable pane, and make sure the default
-    /// profile still exists, so a hand-edited file cannot leave the app with
-    /// nothing to open.
+    /// Repair a session so the app can always start: drop a workspace with no
+    /// usable pane, and make sure every profile can be picked and shown.
+    ///
+    /// The only way to get any of this wrong is to hand-edit the file — the
+    /// editor derives ids from names and refuses to save an empty one — and
+    /// the rest of the file is still worth keeping, so nothing here is an
+    /// error.
     pub fn normalise(mut self) -> Self {
         if self
             .workspace
@@ -365,6 +369,7 @@ impl Session {
         if self.profiles.is_empty() {
             self.profiles.push(Profile::default_shell());
         }
+        repair_profiles(&mut self.profiles);
         if self
             .default_profile
             .as_ref()
@@ -373,6 +378,39 @@ impl Session {
             self.default_profile = self.profiles.first().map(|p| p.id.clone());
         }
         self
+    }
+}
+
+/// Give every profile a name to show and an id nothing else holds.
+///
+/// Two profiles with one id would leave the second unreachable — a lookup finds
+/// the first — and a profile with no name shows as a blank row in the palette.
+fn repair_profiles(profiles: &mut [Profile]) {
+    let mut taken: Vec<String> = Vec::with_capacity(profiles.len());
+    for profile in profiles.iter_mut() {
+        if profile.id.trim().is_empty() {
+            profile.id = "profile".to_string();
+        }
+        profile.id = free_id(profile.id.trim(), &taken);
+        taken.push(profile.id.clone());
+        if profile.name.trim().is_empty() {
+            profile.name = profile.id.clone();
+        }
+    }
+}
+
+/// `candidate`, or `candidate-2`, `candidate-3`… until nothing holds it.
+fn free_id(candidate: &str, taken: &[String]) -> String {
+    if !taken.iter().any(|id| id == candidate) {
+        return candidate.to_string();
+    }
+    let mut suffix = 2;
+    loop {
+        let numbered = format!("{candidate}-{suffix}");
+        if !taken.contains(&numbered) {
+            return numbered;
+        }
+        suffix += 1;
     }
 }
 
@@ -542,6 +580,72 @@ mod tests {
             session.normalise().default_profile.as_deref(),
             Some("default")
         );
+    }
+
+    #[test]
+    fn normalise_gives_a_duplicate_profile_id_a_free_one() {
+        let mut session = Session::empty();
+        session.profiles.push(Profile {
+            id: "default".into(),
+            name: "Copy".into(),
+            shell: Some("bash".into()),
+            args: vec![],
+            cwd: None,
+            env: Default::default(),
+            integration: true,
+        });
+
+        let repaired = session.normalise();
+        assert_eq!(repaired.profiles[1].id, "default-2");
+        // Both profiles are still there, and the default names a real one.
+        assert_eq!(repaired.profiles.len(), 2);
+        assert_eq!(repaired.default_profile.as_deref(), Some("default"));
+        assert_eq!(
+            repaired
+                .profile("default-2")
+                .map(|profile| profile.name.as_str()),
+            Some("Copy")
+        );
+    }
+
+    #[test]
+    fn normalise_names_a_profile_that_has_none() {
+        let mut session = Session::empty();
+        session.profiles.push(Profile {
+            id: "ci".into(),
+            name: "   ".into(),
+            shell: None,
+            args: vec![],
+            cwd: None,
+            env: Default::default(),
+            integration: true,
+        });
+
+        let repaired = session.normalise();
+        assert_eq!(repaired.profile("ci").expect("profile").name, "ci");
+    }
+
+    #[test]
+    fn normalise_repairs_a_profile_with_no_id_or_name() {
+        let mut session = Session::empty();
+        for _ in 0..2 {
+            session.profiles.push(Profile {
+                id: String::new(),
+                name: String::new(),
+                shell: None,
+                args: vec![],
+                cwd: None,
+                env: Default::default(),
+                integration: true,
+            });
+        }
+
+        let repaired = session.normalise();
+        // A fallback id is still an id, and two of them cannot collide.
+        assert_eq!(repaired.profiles[1].id, "profile");
+        assert_eq!(repaired.profiles[1].name, "profile");
+        assert_eq!(repaired.profiles[2].id, "profile-2");
+        assert_eq!(repaired.profiles[2].name, "profile-2");
     }
 
     #[test]
