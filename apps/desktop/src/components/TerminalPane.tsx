@@ -20,6 +20,8 @@ interface TerminalPaneProps {
   canClose: boolean;
   /** Profile this pane opens with, or `null` for the platform default shell. */
   profile: Profile | null;
+  /** Shortens a filesystem path for the header. */
+  formatPath: (path: string) => string;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
 }
@@ -71,13 +73,15 @@ export function TerminalPane({
   focused,
   canClose,
   profile,
+  formatPath,
   onFocus,
   onClose,
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const [status, setStatus] = useState<Status>("starting");
-  const [title, setTitle] = useState<string>("shell");
+  const [title, setTitle] = useState<string>("");
+  const [cwd, setCwd] = useState<string | null>(null);
 
   // The profile is read once, when the pane opens. Editing a profile must not
   // kill a shell that is already running, so this is captured at mount rather
@@ -156,6 +160,9 @@ export function TerminalPane({
           setStatus("failed");
           term.write(`\r\n\x1b[38;5;203m[${event.message}]\x1b[0m\r\n`);
           break;
+        case "cwd":
+          setCwd(event.path);
+          break;
       }
     })
       .then(() => setStatus((current) => (current === "starting" ? "live" : current)))
@@ -197,6 +204,17 @@ export function TerminalPane({
     if (focused) termRef.current?.focus();
   }, [focused]);
 
+  // ConPTY reports the program path as the window title until the shell sets
+  // one of its own, so a title that is really a path tells a person nothing.
+  // The profile name is more useful in that case.
+  const rawTitle = title.trim();
+  const titleIsProgramPath =
+    rawTitle.includes("\\") ||
+    /\.(exe|cmd|bat|com|ps1)$/i.test(rawTitle) ||
+    /^\/[^\s]*$/.test(rawTitle);
+  const displayTitle =
+    rawTitle === "" || titleIsProgramPath ? (profile?.name ?? "shell") : rawTitle;
+
   return (
     <section
       data-focused={focused}
@@ -210,7 +228,17 @@ export function TerminalPane({
           aria-hidden
           className={`size-1.5 shrink-0 rounded-full ${STATUS_DOT[status]}`}
         />
-        <span className="truncate text-[11px] text-ink-muted">{title}</span>
+        <span className="shrink-0 truncate text-[11px] text-ink-muted" title={displayTitle}>
+          {displayTitle}
+        </span>
+        {cwd ? (
+          <span
+            className="min-w-0 truncate text-[10px] text-ink-faint"
+            title={cwd}
+          >
+            {formatPath(cwd)}
+          </span>
+        ) : null}
         <span className="ml-auto shrink-0 text-[10px] tracking-wide text-ink-faint uppercase">
           {STATUS_LABEL[status]}
         </span>

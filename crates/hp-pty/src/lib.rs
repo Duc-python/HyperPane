@@ -46,6 +46,8 @@ pub enum PtyEvent {
     Exit { code: Option<i32> },
     /// The reader failed; the pane is no longer producing output.
     Error { message: String },
+    /// The shell reported its working directory with an OSC 7 sequence.
+    Cwd { path: String },
 }
 
 /// Everything needed to open one pane.
@@ -196,15 +198,23 @@ impl PaneManager {
             .name(format!("hp-pty-read-{}", spec.id))
             .spawn(move || {
                 let mut decoder = Utf8Stream::default();
+                let mut directories = Osc7Scanner::default();
                 let mut buf = [0u8; READ_BUF];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
                             let chunk = decoder.push(&buf[..n]);
-                            if !chunk.is_empty() {
-                                reader_sink(PtyEvent::Data { chunk });
+                            if chunk.is_empty() {
+                                continue;
                             }
+                            // The directory report travels beside the output
+                            // rather than replacing it: the terminal still
+                            // needs the bytes it was sent.
+                            if let Some(path) = directories.push(&chunk) {
+                                reader_sink(PtyEvent::Cwd { path });
+                            }
+                            reader_sink(PtyEvent::Data { chunk });
                         }
                         Err(_) => break,
                     }
@@ -353,10 +363,133 @@ impl Utf8Stream {
     }
 }
 
+/// The start of an OSC 7 report: `ESC ] 7 ;`.
+const OSC7_PREFIX: &str = "\x1b]7;";
+
+/// Pulls working-directory reports out of the output stream.
+///
+/// Shells that support it announce the current directory as
+/// `ESC ] 7 ; file://HOST/PATH` terminated by BEL or `ESC \`. It arrives mixed
+/// into ordinary output and can be split across two reads, so an incomplete
+/// sequence is held until the next chunk completes it.
+///
+/// The bytes are not removed from the stream: the terminal still receives
+/// everything the child wrote.
+#[derive(Default)]
+struct Osc7Scanner {
+    pending: String,
+}
+
+impl Osc7Scanner {
+    /// A report is a URL, not a document; anything longer is not one.
+    const MAX_PENDING: usize = 8 * 1024;
+
+    /// Feed decoded output. Returns the directory from the last complete
+    /// report in this chunk, if any.
+    fn push(&mut self, chunk: &str) -> Option<String> {
+        self.pending.push_str(chunk);
+        let mut latest: Option<String> = None;
+
+        loop {
+            let Some(start) = self.pending.find(OSC7_PREFIX) else {
+                // Keep only a tail that could still become the marker.
+                let keep = partial_marker_len(&self.pending);
+                let cut = self.pending.len() - keep;
+                self.pending.drain(..cut);
+                break;
+            };
+
+            let after = start + OSC7_PREFIX.len();
+            let Some((payload_len, terminator_len)) = find_terminator(&self.pending[after..])
+            else {
+                // The report has not finished arriving yet.
+                self.pending.drain(..start);
+                break;
+            };
+
+            let payload = self.pending[after..after + payload_len].to_string();
+            if let Some(path) = file_url_to_path(&payload) {
+                latest = Some(path);
+            }
+            self.pending.drain(..after + payload_len + terminator_len);
+        }
+
+        if self.pending.len() > Self::MAX_PENDING {
+            self.pending.clear();
+        }
+        latest
+    }
+}
+
+/// Length of the longest proper prefix of the marker that `text` ends with.
+fn partial_marker_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let marker = OSC7_PREFIX.as_bytes();
+    for len in (1..marker.len()).rev() {
+        if bytes.len() >= len && bytes[bytes.len() - len..] == marker[..len] {
+            return len;
+        }
+    }
+    0
+}
+
+/// Position and width of the earliest terminator in `text`.
+fn find_terminator(text: &str) -> Option<(usize, usize)> {
+    let bell = text.find('\x07').map(|index| (index, 1));
+    let string_terminator = text.find("\x1b\\").map(|index| (index, 2));
+    match (bell, string_terminator) {
+        (Some(bell), Some(st)) => Some(if bell.0 <= st.0 { bell } else { st }),
+        (Some(bell), None) => Some(bell),
+        (None, Some(st)) => Some(st),
+        (None, None) => None,
+    }
+}
+
+/// Turn a `file://` URL from an OSC 7 report into a filesystem path.
+fn file_url_to_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    // The authority runs to the first slash and is empty for a local report.
+    let slash = rest.find('/')?;
+    let path = &rest[slash..];
+    if path.is_empty() {
+        return None;
+    }
+
+    let decoded = percent_decode(path);
+
+    // Windows shells report `/C:/Users/name`; the leading slash is not part of
+    // the path.
+    let bytes = decoded.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        return Some(decoded[1..].to_string());
+    }
+    Some(decoded)
+}
+
+/// Decode `%XX` escapes. Invalid escapes are kept as they arrived.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 3 <= bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    out.push(value);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn decodes_ascii_in_one_pass() {
         let mut stream = Utf8Stream::default();
@@ -400,5 +533,95 @@ mod tests {
             out.push_str(&stream.push(chunk));
         }
         assert_eq!(out, text);
+    }
+
+    #[test]
+    fn reads_a_bell_terminated_directory_report() {
+        let mut scanner = Osc7Scanner::default();
+        assert_eq!(
+            scanner
+                .push("\x1b]7;file://host/home/name/project\x07")
+                .as_deref(),
+            Some("/home/name/project")
+        );
+    }
+
+    #[test]
+    fn reads_a_string_terminated_directory_report() {
+        let mut scanner = Osc7Scanner::default();
+        assert_eq!(
+            scanner
+                .push("\x1b]7;file://host/home/name\x1b\\")
+                .as_deref(),
+            Some("/home/name")
+        );
+    }
+
+    #[test]
+    fn finds_a_report_among_ordinary_output() {
+        let mut scanner = Osc7Scanner::default();
+        let output = "prompt$ \x1b]7;file://host/tmp\x07 more output\r\n";
+        assert_eq!(scanner.push(output).as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn completes_a_report_split_across_two_reads() {
+        let mut scanner = Osc7Scanner::default();
+        assert_eq!(scanner.push("output\x1b]7;file://host/va"), None);
+        assert_eq!(scanner.push("r/log\x07rest").as_deref(), Some("/var/log"));
+    }
+
+    #[test]
+    fn completes_a_report_split_inside_the_marker() {
+        let mut scanner = Osc7Scanner::default();
+        assert_eq!(scanner.push("noise\x1b"), None);
+        assert_eq!(scanner.push("]7;file://host/a\x07").as_deref(), Some("/a"));
+    }
+
+    #[test]
+    fn reports_the_last_directory_when_several_arrive() {
+        let mut scanner = Osc7Scanner::default();
+        let output = "\x1b]7;file://h/one\x07\x1b]7;file://h/two\x07";
+        assert_eq!(scanner.push(output).as_deref(), Some("/two"));
+    }
+
+    #[test]
+    fn decodes_percent_escapes_in_a_path() {
+        let mut scanner = Osc7Scanner::default();
+        let report = "\x1b]7;file://h/home/name/my%20project\x07";
+        assert_eq!(
+            scanner.push(report).as_deref(),
+            Some("/home/name/my project")
+        );
+    }
+
+    #[test]
+    fn strips_the_leading_slash_before_a_windows_drive() {
+        let mut scanner = Osc7Scanner::default();
+        let report = "\x1b]7;file://h/C:/Users/name/repo\x07";
+        assert_eq!(scanner.push(report).as_deref(), Some("C:/Users/name/repo"));
+    }
+
+    #[test]
+    fn ignores_a_url_that_is_not_a_local_file_report() {
+        let mut scanner = Osc7Scanner::default();
+        assert_eq!(scanner.push("\x1b]7;https://example.com/x\x07"), None);
+        assert_eq!(scanner.push("\x1b]7;file://host\x07"), None);
+    }
+
+    #[test]
+    fn ignores_other_osc_sequences() {
+        let mut scanner = Osc7Scanner::default();
+        assert_eq!(scanner.push("\x1b]0;a window title\x07"), None);
+        assert_eq!(scanner.push("\x1b]133;A\x07"), None);
+    }
+
+    #[test]
+    fn does_not_keep_an_unbounded_buffer() {
+        let mut scanner = Osc7Scanner::default();
+        for _ in 0..100 {
+            scanner.push(&"x".repeat(1024));
+        }
+        assert!(scanner.pending.len() <= Osc7Scanner::MAX_PENDING);
     }
 }

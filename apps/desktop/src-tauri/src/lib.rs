@@ -52,6 +52,8 @@ struct AppInfo {
     version: &'static str,
     platform: &'static str,
     default_shell: String,
+    /// Used by the UI to shorten a path to `~/…`.
+    home_dir: Option<String>,
 }
 
 /// The workspace currently on screen, or `null` before the first pane exists.
@@ -173,7 +175,20 @@ fn app_info() -> AppInfo {
         version: env!("CARGO_PKG_VERSION"),
         platform: std::env::consts::OS,
         default_shell: hp_pty::resolve_shell(),
+        home_dir: home_directory(),
     }
+}
+
+/// The user's home directory, for displaying paths as `~/…`.
+fn home_directory() -> Option<String> {
+    #[cfg(windows)]
+    let keys = ["USERPROFILE", "HOME"];
+    #[cfg(not(windows))]
+    let keys = ["HOME", "USERPROFILE"];
+
+    keys.iter()
+        .find_map(|key| std::env::var(key).ok())
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// The agent catalogue, for the UI and for `pane.spawn` validation.

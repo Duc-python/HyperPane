@@ -27,6 +27,7 @@ import {
   type Workspace,
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
+import { shortenPath } from "./lib/paths";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
@@ -195,6 +196,11 @@ export default function App() {
       return profiles.find((profile) => profile.id === wanted) ?? null;
     },
     [paneProfiles, profiles],
+  );
+
+  const formatPath = useCallback(
+    (path: string) => shortenPath(path, info?.homeDir ?? null),
+    [info],
   );
 
   const commands = useMemo<Command[]>(() => {
@@ -389,6 +395,7 @@ export default function App() {
             focused={workspace.focused}
             canClose={canClose}
             profileFor={profileFor}
+            formatPath={formatPath}
             onFocus={focus}
             onClose={(id) => void closePane(id)}
             onRatioCommit={(path, ratio) => void commitRatio(path, ratio)}

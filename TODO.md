@@ -19,9 +19,11 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Profile model: shell, args, cwd, env
 - [x] Keybinding registry: one table, no hard-coded chords
 - [x] Command palette (`mod+shift+p`) with fuzzy filtering
-- [ ] Shell integration: OSC 133 prompt marks, exit code, command duration
-- [ ] OSC 7 working directory in the pane header
-- [ ] Pane titles from OSC 0/2, with the process name as a fallback
+- [x] OSC 7 working directory in the pane header
+- [x] Pane titles from OSC 0/2, with the profile name as a fallback
+- [ ] Shell integration: install the hooks that make OSC 7 and OSC 133 fire
+      (PowerShell does not report its directory on its own)
+- [ ] OSC 133 prompt marks: exit code and command duration per command
 - [ ] Profile editor in the UI (the model and persistence are in place)
 
 ## P2 — agents

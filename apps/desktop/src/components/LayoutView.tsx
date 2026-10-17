@@ -10,6 +10,8 @@ interface LayoutViewProps {
   canClose: boolean;
   /** Which profile a newly opened pane should use. */
   profileFor: (paneId: string) => Profile | null;
+  /** Shortens a filesystem path for the pane header. */
+  formatPath: (path: string) => string;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   onRatioCommit: (path: boolean[], ratio: number) => void;
@@ -21,6 +23,7 @@ export function LayoutView({
   focused,
   canClose,
   profileFor,
+  formatPath,
   onFocus,
   onClose,
   onRatioCommit,
@@ -32,6 +35,7 @@ export function LayoutView({
         focused={focused === node.pane}
         canClose={canClose}
         profile={profileFor(node.pane)}
+        formatPath={formatPath}
         onFocus={onFocus}
         onClose={onClose}
       />
@@ -45,6 +49,7 @@ export function LayoutView({
       focused={focused}
       canClose={canClose}
       profileFor={profileFor}
+      formatPath={formatPath}
       onFocus={onFocus}
       onClose={onClose}
       onRatioCommit={onRatioCommit}
@@ -69,6 +74,7 @@ function SplitView({
   focused,
   canClose,
   profileFor,
+  formatPath,
   onFocus,
   onClose,
   onRatioCommit,
@@ -92,6 +98,7 @@ function SplitView({
           focused={focused}
           canClose={canClose}
           profileFor={profileFor}
+          formatPath={formatPath}
           onFocus={onFocus}
           onClose={onClose}
           onRatioCommit={onRatioCommit}
@@ -115,6 +122,7 @@ function SplitView({
           focused={focused}
           canClose={canClose}
           profileFor={profileFor}
+          formatPath={formatPath}
           onFocus={onFocus}
           onClose={onClose}
           onRatioCommit={onRatioCommit}

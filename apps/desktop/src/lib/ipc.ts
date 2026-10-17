@@ -26,7 +26,9 @@ export interface Workspace {
 export type PtyEvent =
   | { kind: "data"; chunk: string }
   | { kind: "exit"; code: number | null }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** The shell reported its working directory (OSC 7). */
+  | { kind: "cwd"; path: string };
 
 /** Mirrors `hp_pty::PaneSpec`. */
 export interface PaneSpec {
@@ -44,6 +46,7 @@ export interface AppInfo {
   version: string;
   platform: string;
   defaultShell: string;
+  homeDir: string | null;
 }
 
 /** Mirrors `hp_agents::AgentSpec`. */
