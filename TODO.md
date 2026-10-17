@@ -70,7 +70,7 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Gates: `humanPlan` is the Start button, `checkerPass` and `humanCommit`
       put a hold on screen with a button
 - [ ] Router: pick an agent for a task rather than following the preference list
-- [ ] Team run view: a wave timeline with live status, rather than one line in
+- [x] Team run view: a wave timeline with live status, rather than one line in
       the header and a bar when a hold is up
 - [x] Show what each member claimed when a wave finishes, and keep it after the
       pane closes. A member that printed no `RESULT` line reads "no report".

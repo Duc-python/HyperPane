@@ -47,6 +47,7 @@ import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
 import { TeamPlanPanel } from "./components/TeamPlanPanel";
+import { TeamRunPanel } from "./components/TeamRunPanel";
 import type { PaneController } from "./components/TerminalPane";
 
 /** Must match `hp_core::SESSION_VERSION`. */
@@ -91,6 +92,8 @@ export default function App() {
   const [teamKey, setTeamKey] = useState<string | null>(null);
   /** Where the team run in progress is, refreshed while it goes. */
   const [teamRun, setTeamRun] = useState<TeamStatus | null>(null);
+  /** Set while the timeline of the run is on screen. */
+  const [showRun, setShowRun] = useState(false);
   const [sessionFile, setSessionFile] = useState<string | null>(null);
   const [auditFile, setAuditFile] = useState<string | null>(null);
 
@@ -401,6 +404,9 @@ export default function App() {
     try {
       const status = await teamStatus();
       setTeamRun(status);
+      // A finished run takes its view with it. Leaving the flag up would open
+      // a timeline nobody asked for the moment the next run starts.
+      if (!status) setShowRun(false);
       if (!status || status.holding || status.running > 0) return;
 
       // The last advance is the one that reports `finished` or raises a hold,
@@ -536,8 +542,25 @@ export default function App() {
       });
     }
 
+    if (teamRun) {
+      list.push({
+        id: "team.showRun",
+        // Verb first, like every other command, and a prefix no other command
+        // shares: "team" alone still finds the presets, not this.
+        title: `Open team run: ${teamRun.title}`,
+        group: "Team",
+        hint:
+          teamRun.running > 0
+            ? `${teamRun.running} running`
+            : teamRun.holding
+              ? "waiting on you"
+              : "idle",
+        run: () => setShowRun(true),
+      });
+    }
+
     return list;
-  }, [profiles, agents, teams, splitWith, closePane, cycle, withFocusedPane]);
+  }, [profiles, agents, teams, teamRun, splitWith, closePane, cycle, withFocusedPane]);
 
   useEffect(() => {
     commandsRef.current = commands;
@@ -639,15 +662,18 @@ export default function App() {
 
         <div className="ml-auto flex items-center gap-3 text-[10px] text-ink-faint">
           {teamRun ? (
-            <span
-              title={
+            <button
+              type="button"
+              onClick={() => setShowRun(true)}
+              title={`${
                 teamRun.holdingMessage ??
                 `${teamRun.wavesRemaining} wave(s) after this one`
-              }
+              } — open the run view`}
+              className="-mx-1 rounded px-1 py-0.5 transition-colors hover:bg-overlay hover:text-ink"
             >
               team {teamRun.title} · wave {teamRun.wave}
               {teamRun.running > 0 ? ` · ${teamRun.running} running` : ""}
-            </span>
+            </button>
           ) : null}
           {activeProfile ? (
             <span title={activeProfile.shell ?? "platform default shell"}>
@@ -715,6 +741,13 @@ export default function App() {
           </div>
           <button
             type="button"
+            onClick={() => setShowRun(true)}
+            className="shrink-0 rounded border border-warn/50 px-2 py-0.5 transition-colors hover:bg-warn/20"
+          >
+            timeline
+          </button>
+          <button
+            type="button"
             onClick={() => void confirmTeam()}
             className="shrink-0 rounded border border-warn/50 px-2 py-0.5 transition-colors hover:bg-warn/20"
           >
@@ -775,6 +808,14 @@ export default function App() {
           teamKey={teamKey}
           onStart={(task) => void startTeam(teamKey, task)}
           onClose={() => setTeamKey(null)}
+        />
+      ) : null}
+
+      {showRun && teamRun ? (
+        <TeamRunPanel
+          teamKey={teamRun.key}
+          status={teamRun}
+          onClose={() => setShowRun(false)}
         />
       ) : null}
 
