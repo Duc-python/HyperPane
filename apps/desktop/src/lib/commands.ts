@@ -5,6 +5,11 @@ export interface Command {
   group: string;
   /** Right-aligned note: a chord, or why the command is unavailable. */
   hint: string | null;
+  /**
+   * Commands that gather more input leave the palette open rather than
+   * closing it and asking somewhere else.
+   */
+  keepOpen?: boolean;
   run: () => void | Promise<void>;
 }
 

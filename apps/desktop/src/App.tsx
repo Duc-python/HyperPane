@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  agentsAvailable,
   appInfo,
   paneClose,
   paneIds,
@@ -20,6 +21,7 @@ import {
   workspaceSetFocus,
   workspaceSetRatio,
   workspaceSplit,
+  type AgentInfo,
   type AppInfo,
   type Profile,
   type Session,
@@ -28,6 +30,7 @@ import {
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
 import { shortenPath } from "./lib/paths";
+import { preparePaneAgent, type PaneAgent } from "./lib/agents";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
@@ -54,7 +57,11 @@ export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [defaultProfile, setDefaultProfile] = useState<string | null>(null);
   const [paneProfiles, setPaneProfiles] = useState<Record<string, string>>({});
+  const [paneAgents, setPaneAgents] = useState<Record<string, PaneAgent>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** Set while the palette is asking for a task. */
+  const [pendingAgent, setPendingAgent] = useState<AgentInfo | null>(null);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessionFile, setSessionFile] = useState<string | null>(null);
 
   const nextPane = useRef(1);
@@ -76,6 +83,9 @@ export default function App() {
     void (async () => {
       const details = await appInfo().catch(() => null);
       if (!cancelled && details) setInfo(details);
+
+      const available = await agentsAvailable().catch(() => []);
+      if (!cancelled) setAgents(available);
 
       try {
         const session = await sessionLoad();
@@ -159,6 +169,11 @@ export default function App() {
       delete remaining[id];
       return remaining;
     });
+    setPaneAgents((map) => {
+      const remaining = { ...map };
+      delete remaining[id];
+      return remaining;
+    });
     try {
       setWorkspace(await workspaceClosePane(id));
     } catch (cause) {
@@ -197,6 +212,33 @@ export default function App() {
       return profiles.find((profile) => profile.id === wanted) ?? null;
     },
     [paneProfiles, profiles],
+  );
+
+  const agentFor = useCallback(
+    (paneId: string): PaneAgent | null => paneAgents[paneId] ?? null,
+    [paneAgents],
+  );
+
+  /** Open an agent in a new pane beside the focused one. */
+  const spawnAgent = useCallback(
+    async (agent: AgentInfo, task: string) => {
+      const current = workspaceRef.current;
+      if (!current) return;
+      const target = current.focused ?? paneIds(current.layout)[0];
+      if (!target) return;
+
+      const id = `p${nextPane.current++}`;
+      try {
+        const prepared = await preparePaneAgent(agent, task);
+        // Both updates land in one render, so the new pane mounts with its
+        // agent already known rather than starting a shell first.
+        setPaneAgents((map) => ({ ...map, [id]: prepared }));
+        setWorkspace(await workspaceSplit(target, "row", id));
+      } catch (cause) {
+        setError(String(cause));
+      }
+    },
+    [],
   );
 
   const formatPath = useCallback(
@@ -304,8 +346,20 @@ export default function App() {
       });
     }
 
+    for (const agent of agents.filter((entry) => entry.installed)) {
+      list.push({
+        id: `agent.run.${agent.id}`,
+        title: `Run ${agent.label}…`,
+        group: "Agent",
+        hint: agent.program,
+        // The palette asks for the task next, in the same input.
+        keepOpen: true,
+        run: () => setPendingAgent(agent),
+      });
+    }
+
     return list;
-  }, [profiles, splitWith, closePane, cycle, withFocusedPane]);
+  }, [profiles, agents, splitWith, closePane, cycle, withFocusedPane]);
 
   useEffect(() => {
     commandsRef.current = commands;
@@ -431,6 +485,7 @@ export default function App() {
             focused={workspace.focused}
             canClose={canClose}
             profileFor={profileFor}
+            agentFor={agentFor}
             formatPath={formatPath}
             onReady={onReady}
             onFocus={focus}
@@ -467,7 +522,17 @@ export default function App() {
       <CommandPalette
         open={paletteOpen}
         commands={commands}
-        onClose={() => setPaletteOpen(false)}
+        taskFor={pendingAgent}
+        onSubmitTask={(task) => {
+          const agent = pendingAgent;
+          setPendingAgent(null);
+          setPaletteOpen(false);
+          if (agent) void spawnAgent(agent, task);
+        }}
+        onClose={() => {
+          setPaletteOpen(false);
+          setPendingAgent(null);
+        }}
       />
     </div>
   );

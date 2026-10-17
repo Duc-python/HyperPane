@@ -33,10 +33,12 @@ green (tests, clippy, typecheck, and the app actually running).
 
 ## P2 — agents
 
-- [ ] `pane.spawn` / `send` / `list` / `read` / `close` from the UI
-- [ ] Worktree per agent, branch `agent/<8>`
-- [ ] Status detection: working / blocked / done / exited
-- [ ] `RESULT` line parsing
+- [x] Agent catalogue as data, with per-agent launch rules
+- [x] Open an installed agent in a pane from the palette, task typed there
+- [x] Read the child's own `RESULT` line and show it as a claim
+- [x] Worktrees: create on `agent/<8>`, reuse, remove without deleting the branch
+- [ ] Give an agent pane its own worktree from the UI
+- [ ] Status detection: working / blocked / done, per agent
 - [ ] Token meter + budget guard (blocks above 85% of the 5-hour window)
 - [ ] Spawn approval card and audit log
 - [ ] Caps: live children, spawn rate, wall clock

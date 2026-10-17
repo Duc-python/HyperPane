@@ -3,11 +3,14 @@ import { Terminal, type IMarker, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { formatDuration } from "../lib/format";
+import { describeResult, type PaneAgent } from "../lib/agents";
 import {
   paneClose,
   paneResize,
+  paneRunState,
   paneSpawn,
   paneWrite,
+  type PaneRunState,
   type PaneSpec,
   type Profile,
   type PtyEvent,
@@ -38,6 +41,8 @@ interface TerminalPaneProps {
   canClose: boolean;
   /** Profile this pane opens with, or `null` for the platform default shell. */
   profile: Profile | null;
+  /** The agent this pane runs, or `null` for a plain shell. */
+  agent: PaneAgent | null;
   /** Shortens a filesystem path for the header. */
   formatPath: (path: string) => string;
   /** Publishes this pane's controller, or `null` when it goes away. */
@@ -93,6 +98,7 @@ export function TerminalPane({
   focused,
   canClose,
   profile,
+  agent,
   formatPath,
   onReady,
   onFocus,
@@ -113,11 +119,14 @@ export function TerminalPane({
    * typing as if it were the command's own.
    */
   const [durationMs, setDurationMs] = useState<number | null>(null);
+  /** What an agent pane has reported about itself, when it runs one. */
+  const [runState, setRunState] = useState<PaneRunState | null>(null);
 
   // The profile is read once, when the pane opens. Editing a profile must not
   // kill a shell that is already running, so this is captured at mount rather
   // than tracked.
   const openProfile = useRef(profile);
+  const openAgent = useRef(agent);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -175,16 +184,31 @@ export function TerminalPane({
     };
 
     const chosen = openProfile.current;
-    const spec: PaneSpec = {
-      id,
-      cols: term.cols,
-      rows: term.rows,
-      shell: chosen?.shell ?? null,
-      args: chosen?.args ?? [],
-      cwd: chosen?.cwd ?? null,
-      env: chosen?.env ?? {},
-      integration: chosen?.integration ?? true,
-    };
+    const agentPane = openAgent.current;
+    const spec: PaneSpec = agentPane
+      ? {
+          id,
+          cols: term.cols,
+          rows: term.rows,
+          shell: agentPane.program,
+          args: agentPane.args,
+          cwd: chosen?.cwd ?? null,
+          env: chosen?.env ?? {},
+          // An agent CLI is not a shell. Prompt hooks typed into it would be
+          // read as part of the conversation and confuse it.
+          integration: false,
+          agent: agentPane.id,
+        }
+      : {
+          id,
+          cols: term.cols,
+          rows: term.rows,
+          shell: chosen?.shell ?? null,
+          args: chosen?.args ?? [],
+          cwd: chosen?.cwd ?? null,
+          env: chosen?.env ?? {},
+          integration: chosen?.integration ?? true,
+        };
     void paneSpawn(spec, (event: PtyEvent) => {
       if (disposed) return;
       switch (event.kind) {
@@ -298,6 +322,29 @@ export function TerminalPane({
     if (focused) termRef.current?.focus();
   }, [focused]);
 
+  // An agent pane reports on itself, and the app reads that report out of the
+  // pane's own output. A second between reads is enough for a header and costs
+  // nothing next to the terminal stream itself.
+  useEffect(() => {
+    if (!agent) return;
+    let cancelled = false;
+
+    const read = () => {
+      void paneRunState(id)
+        .then((state) => {
+          if (!cancelled) setRunState(state);
+        })
+        .catch(() => undefined);
+    };
+
+    read();
+    const timer = window.setInterval(read, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [id, agent]);
+
   // ConPTY reports the program path as the window title until the shell sets
   // one of its own, so a title that is really a path tells a person nothing.
   // The profile name is more useful in that case.
@@ -307,7 +354,11 @@ export function TerminalPane({
     /\.(exe|cmd|bat|com|ps1)$/i.test(rawTitle) ||
     /^\/[^\s]*$/.test(rawTitle);
   const displayTitle =
-    rawTitle === "" || titleIsProgramPath ? (profile?.name ?? "shell") : rawTitle;
+    rawTitle === "" || titleIsProgramPath
+      ? (agent?.label ?? profile?.name ?? "shell")
+      : rawTitle;
+
+  const result = runState?.result ?? null;
 
   return (
     <section
@@ -331,6 +382,24 @@ export function TerminalPane({
             title={cwd}
           >
             {formatPath(cwd)}
+          </span>
+        ) : null}
+        {result ? (
+          <span
+            className={`shrink-0 rounded border px-1 text-[9px] ${
+              result.status === "failed"
+                ? "border-danger/50 bg-danger/10 text-danger"
+                : result.status === "blocked"
+                  ? "border-warn/50 bg-warn/10 text-warn"
+                  : "border-ok/50 bg-ok/10 text-ok"
+            }`}
+            title={
+              result.files.length > 0
+                ? `The child reports: ${result.files.join(", ")}`
+                : "The child reported no files"
+            }
+          >
+            {describeResult(result)}
           </span>
         ) : null}
         <span className="ml-auto flex shrink-0 items-center gap-2">

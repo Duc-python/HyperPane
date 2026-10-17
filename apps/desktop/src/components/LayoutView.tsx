@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LayoutNode, Profile, SplitDirection } from "../lib/ipc";
+import type { PaneAgent } from "../lib/agents";
 import { TerminalPane, type PaneController } from "./TerminalPane";
 
 interface LayoutViewProps {
@@ -10,6 +11,8 @@ interface LayoutViewProps {
   canClose: boolean;
   /** Which profile a newly opened pane should use. */
   profileFor: (paneId: string) => Profile | null;
+  /** The agent a pane runs, when it runs one. */
+  agentFor: (paneId: string) => PaneAgent | null;
   /** Shortens a filesystem path for the pane header. */
   formatPath: (path: string) => string;
   /** Publishes a pane's controller so commands can drive it. */
@@ -25,6 +28,7 @@ export function LayoutView({
   focused,
   canClose,
   profileFor,
+  agentFor,
   formatPath,
   onReady,
   onFocus,
@@ -38,6 +42,7 @@ export function LayoutView({
         focused={focused === node.pane}
         canClose={canClose}
         profile={profileFor(node.pane)}
+        agent={agentFor(node.pane)}
         formatPath={formatPath}
         onReady={onReady}
         onFocus={onFocus}
@@ -53,6 +58,7 @@ export function LayoutView({
       focused={focused}
       canClose={canClose}
       profileFor={profileFor}
+      agentFor={agentFor}
       formatPath={formatPath}
       onReady={onReady}
       onFocus={onFocus}
@@ -79,6 +85,7 @@ function SplitView({
   focused,
   canClose,
   profileFor,
+  agentFor,
   formatPath,
   onReady,
   onFocus,
@@ -104,6 +111,7 @@ function SplitView({
           focused={focused}
           canClose={canClose}
           profileFor={profileFor}
+          agentFor={agentFor}
           formatPath={formatPath}
           onReady={onReady}
           onFocus={onFocus}
@@ -129,6 +137,7 @@ function SplitView({
           focused={focused}
           canClose={canClose}
           profileFor={profileFor}
+          agentFor={agentFor}
           formatPath={formatPath}
           onReady={onReady}
           onFocus={onFocus}

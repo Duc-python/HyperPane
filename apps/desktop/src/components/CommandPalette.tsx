@@ -4,17 +4,30 @@ import { filterCommands, type Command } from "../lib/commands";
 interface CommandPaletteProps {
   open: boolean;
   commands: Command[];
+  /**
+   * When set, the palette asks for a task instead of listing commands. One
+   * input, one step: an agent that was just chosen needs a sentence, not a
+   * second dialog.
+   */
+  taskFor: { label: string } | null;
+  onSubmitTask: (task: string) => void;
   onClose: () => void;
 }
 
-export function CommandPalette({ open, commands, onClose }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  commands,
+  taskFor,
+  onSubmitTask,
+  onClose,
+}: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const results = useMemo(
-    () => filterCommands(query, commands),
-    [query, commands],
+    () => (taskFor ? [] : filterCommands(query, commands)),
+    [query, commands, taskFor],
   );
 
   useEffect(() => {
@@ -24,7 +37,7 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
     // Focus after the paint, or the caret lands before the input is mounted.
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [open]);
+  }, [open, taskFor]);
 
   useEffect(() => {
     if (index >= results.length) setIndex(0);
@@ -34,7 +47,7 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
 
   const run = (command: Command | undefined) => {
     if (!command) return;
-    onClose();
+    if (command.keepOpen !== true) onClose();
     void command.run();
   };
 
@@ -52,7 +65,7 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label={taskFor ? "Task" : "Command palette"}
         className="w-[min(580px,92vw)] overflow-hidden rounded-xl border border-line-strong bg-surface shadow-2xl"
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -60,8 +73,12 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
           ref={inputRef}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Type a command…"
-          aria-label="Command"
+          placeholder={
+            taskFor
+              ? `What should ${taskFor.label} do? (empty opens it interactively)`
+              : "Type a command…"
+          }
+          aria-label={taskFor ? "Task" : "Command"}
           className="w-full border-b border-line bg-transparent px-4 py-3 text-[13px] text-ink outline-none placeholder:text-ink-faint"
           onKeyDown={(event) => {
             switch (event.key) {
@@ -70,16 +87,19 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
                 onClose();
                 break;
               case "ArrowDown":
+                if (taskFor) break;
                 event.preventDefault();
                 move(1);
                 break;
               case "ArrowUp":
+                if (taskFor) break;
                 event.preventDefault();
                 move(-1);
                 break;
               case "Enter":
                 event.preventDefault();
-                run(results[index]);
+                if (taskFor) onSubmitTask(query.trim());
+                else run(results[index]);
                 break;
               default:
                 break;
@@ -87,35 +107,37 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
           }}
         />
 
-        <ul className="max-h-[46vh] overflow-y-auto py-1">
-          {results.length === 0 ? (
-            <li className="px-4 py-6 text-center text-[12px] text-ink-faint">
-              no matching command
-            </li>
-          ) : (
-            results.map((command, position) => (
-              <li key={command.id}>
-                <button
-                  type="button"
-                  data-active={position === index}
-                  onMouseEnter={() => setIndex(position)}
-                  onClick={() => run(command)}
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-[12px] transition-colors data-[active=true]:bg-overlay"
-                >
-                  <span className="w-20 shrink-0 text-[10px] tracking-wide text-ink-faint uppercase">
-                    {command.group}
-                  </span>
-                  <span className="truncate text-ink">{command.title}</span>
-                  {command.hint ? (
-                    <kbd className="ml-auto shrink-0 rounded border border-line bg-raised px-1.5 py-px text-[9px] text-ink-muted">
-                      {command.hint}
-                    </kbd>
-                  ) : null}
-                </button>
+        {taskFor ? null : (
+          <ul className="max-h-[46vh] overflow-y-auto py-1">
+            {results.length === 0 ? (
+              <li className="px-4 py-6 text-center text-[12px] text-ink-faint">
+                no matching command
               </li>
-            ))
-          )}
-        </ul>
+            ) : (
+              results.map((command, position) => (
+                <li key={command.id}>
+                  <button
+                    type="button"
+                    data-active={position === index}
+                    onMouseEnter={() => setIndex(position)}
+                    onClick={() => run(command)}
+                    className="flex w-full items-center gap-3 px-4 py-2 text-left text-[12px] transition-colors data-[active=true]:bg-overlay"
+                  >
+                    <span className="w-20 shrink-0 text-[10px] tracking-wide text-ink-faint uppercase">
+                      {command.group}
+                    </span>
+                    <span className="truncate text-ink">{command.title}</span>
+                    {command.hint ? (
+                      <kbd className="ml-auto shrink-0 rounded border border-line bg-raised px-1.5 py-px text-[9px] text-ink-muted">
+                        {command.hint}
+                      </kbd>
+                    ) : null}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
       </div>
     </div>
   );

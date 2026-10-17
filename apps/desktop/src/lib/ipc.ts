@@ -49,6 +49,8 @@ export interface PaneSpec {
   rows?: number;
   /** Load HyperPane's prompt hooks into the shell. */
   integration?: boolean;
+  /** Catalogue id when this pane runs an agent. */
+  agent?: string | null;
 }
 
 export interface AppInfo {
@@ -154,6 +156,51 @@ export interface Session {
   profiles: Profile[];
   defaultProfile: string | null;
 }
+
+/** Mirrors `hp_agents::result::RunResult`. */
+export interface RunResult {
+  status: "done" | "failed" | "blocked";
+  files: string[];
+  tests: "pass" | "fail" | "none";
+}
+
+/** Mirrors the app's `PaneRunState`. */
+export interface PaneRunState {
+  agent: string | null;
+  /** The child's own last RESULT line. A claim, not a fact. */
+  result: RunResult | null;
+}
+
+/** Which catalogue agents are installed on this machine. */
+export interface AgentInfo {
+  id: string;
+  label: string;
+  program: string;
+  installed: boolean;
+}
+
+export interface AgentLaunch {
+  program: string;
+  args: string[];
+  needsPaste: boolean;
+  label: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+}
+
+export const agentsAvailable = () => invoke<AgentInfo[]>("agents_available");
+
+export const agentLaunch = (agent: string, task: string) =>
+  invoke<AgentLaunch>("agent_launch", { agent, task });
+
+export const agentWorktree = (repo: string, seed: string) =>
+  invoke<WorktreeInfo>("agent_worktree", { repo, seed });
+
+export const paneRunState = (id: string) =>
+  invoke<PaneRunState | null>("pane_run_state", { id });
 
 export const sessionLoad = () => invoke<Session>("session_load");
 

@@ -6,7 +6,14 @@
 //! change rather than a code change.
 //!
 //! The built-in list below is a starting point. A `catalogue.json` beside the
-//! app's data directory overrides and extends it at runtime (P2).
+//! app's data directory overrides and extends it (later in P2).
+
+use std::path::PathBuf;
+
+pub mod result;
+pub mod worktree;
+
+pub use result::{ResultScanner, RunResult, RunStatus, TestOutcome};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,10 +21,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Delivery {
-    /// Passed as the agent's own start prompt.
+    /// Passed as an argument at startup.
     StartArgument,
-    /// The app starts the agent, then pastes the task into its prompt once the
-    /// agent is up. Used for CLIs that do not accept a prompt argument.
+    /// The app starts the agent, then types the task into its prompt once the
+    /// agent is up. Used for CLIs that take no prompt argument.
     PastedAfterStart,
 }
 
@@ -43,6 +50,9 @@ pub struct AgentSpec {
     /// Executable looked up on `PATH`.
     pub program: &'static str,
     pub delivery: Delivery,
+    /// Flag the task is passed behind, when the CLI expects one. `None` means
+    /// the task is the first argument.
+    pub prompt_flag: Option<&'static str>,
     /// The app can tell `working` / `blocked` / `done` apart for this agent.
     pub status_detection: bool,
     /// The app's usage readout covers this agent.
@@ -53,28 +63,38 @@ pub struct AgentSpec {
 impl AgentSpec {
     /// Program and arguments for starting this agent with `task`.
     ///
-    /// Agents that take no prompt argument are started bare; the app pastes the
+    /// Agents that take no prompt argument are started bare; the app types the
     /// task afterwards.
     pub fn launch(&self, task: &str) -> (&'static str, Vec<String>) {
+        let trimmed = task.trim();
         match self.delivery {
-            Delivery::StartArgument if !task.is_empty() => (self.program, vec![task.to_string()]),
+            Delivery::StartArgument if !trimmed.is_empty() => match self.prompt_flag {
+                Some(flag) => (self.program, vec![flag.to_string(), trimmed.to_string()]),
+                None => (self.program, vec![trimmed.to_string()]),
+            },
             _ => (self.program, Vec::new()),
         }
     }
 
-    /// Whether the task has to be pasted after the agent starts.
+    /// Whether the task has to be typed in after the agent starts.
     pub fn needs_paste(&self) -> bool {
         matches!(self.delivery, Delivery::PastedAfterStart)
     }
+
+    /// Whether this agent's program is on `PATH`.
+    pub fn is_installed(&self) -> bool {
+        resolve_program(self.program).is_some()
+    }
 }
 
-/// Built-in catalogue. Ordered by how commonly they are used as pane agents.
+/// Built-in catalogue, ordered by how commonly they are used as pane agents.
 pub const BUILTIN: &[AgentSpec] = &[
     AgentSpec {
         id: "claude-code",
         label: "Claude Code",
         program: "claude",
         delivery: Delivery::StartArgument,
+        prompt_flag: None,
         status_detection: true,
         token_meter: true,
         install: InstallHint::Command,
@@ -84,6 +104,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Codex",
         program: "codex",
         delivery: Delivery::StartArgument,
+        prompt_flag: None,
         status_detection: true,
         token_meter: true,
         install: InstallHint::Command,
@@ -92,7 +113,10 @@ pub const BUILTIN: &[AgentSpec] = &[
         id: "opencode",
         label: "opencode",
         program: "opencode",
-        delivery: Delivery::PastedAfterStart,
+        // Verified against the installed CLI: `opencode --prompt "<task>"`
+        // starts it with the task already submitted.
+        delivery: Delivery::StartArgument,
+        prompt_flag: Some("--prompt"),
         status_detection: true,
         token_meter: false,
         install: InstallHint::Command,
@@ -102,6 +126,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Gemini CLI",
         program: "gemini",
         delivery: Delivery::StartArgument,
+        prompt_flag: None,
         status_detection: true,
         token_meter: true,
         install: InstallHint::Command,
@@ -111,6 +136,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Qwen Code",
         program: "qwen",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: true,
         token_meter: false,
         install: InstallHint::Command,
@@ -120,6 +146,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Cursor CLI",
         program: "cursor-agent",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: true,
         token_meter: false,
         install: InstallHint::Docs,
@@ -129,6 +156,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Grok CLI",
         program: "grok",
         delivery: Delivery::StartArgument,
+        prompt_flag: None,
         status_detection: true,
         token_meter: false,
         install: InstallHint::Command,
@@ -138,6 +166,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Goose",
         program: "goose",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: true,
         token_meter: false,
         install: InstallHint::Docs,
@@ -147,6 +176,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Aider",
         program: "aider",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: false,
         token_meter: false,
         install: InstallHint::Command,
@@ -156,6 +186,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Crush",
         program: "crush",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: false,
         token_meter: false,
         install: InstallHint::Command,
@@ -165,6 +196,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "GitHub Copilot CLI",
         program: "copilot",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: false,
         token_meter: false,
         install: InstallHint::Docs,
@@ -174,6 +206,7 @@ pub const BUILTIN: &[AgentSpec] = &[
         label: "Amp",
         program: "amp",
         delivery: Delivery::PastedAfterStart,
+        prompt_flag: None,
         status_detection: false,
         token_meter: false,
         install: InstallHint::Docs,
@@ -193,6 +226,76 @@ pub fn by_id(id: &str) -> Option<&'static AgentSpec> {
 /// Ids of every known agent, for error messages and the palette.
 pub fn known_ids() -> Vec<&'static str> {
     catalogue().iter().map(|agent| agent.id).collect()
+}
+
+/// File names to try for a program, in order.
+fn executable_names(program: &str) -> Vec<String> {
+    if program.contains('.') {
+        return vec![program.to_string()];
+    }
+
+    #[cfg(windows)]
+    {
+        // An npm-installed CLI is a `.cmd` shim, not a `.exe`, so a bare name
+        // does not name a file that can be started.
+        let mut names = vec![format!("{program}.cmd")];
+        let extensions =
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        for extension in extensions.split(';') {
+            let extension = extension.trim().to_ascii_lowercase();
+            if !extension.is_empty() {
+                names.push(format!("{program}{extension}"));
+            }
+        }
+        names
+    }
+    #[cfg(not(windows))]
+    {
+        vec![program.to_string()]
+    }
+}
+
+/// The file that `program` names, searched on `PATH`.
+pub fn resolve_program(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        if directory.as_os_str().is_empty() {
+            continue;
+        }
+        for name in executable_names(program) {
+            let candidate = directory.join(&name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Program and arguments that will actually start.
+///
+/// A resolved `.cmd` or `.bat` has to go through `cmd.exe`: the Windows process
+/// API starts executables, and a batch file is not one.
+pub fn spawn_argv(program: &str, args: &[String]) -> (String, Vec<String>) {
+    let Some(path) = resolve_program(program) else {
+        // Leave it alone so the pane reports the failure it would report in a
+        // terminal, rather than failing in a way that looks like an app bug.
+        return (program.to_string(), args.to_vec());
+    };
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if extension == "cmd" || extension == "bat" {
+        let mut wrapped = vec!["/c".to_string(), path.to_string_lossy().into_owned()];
+        wrapped.extend_from_slice(args);
+        ("cmd.exe".to_string(), wrapped)
+    } else {
+        (path.to_string_lossy().into_owned(), args.to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -218,8 +321,18 @@ mod tests {
     }
 
     #[test]
-    fn pasted_agents_start_bare() {
+    fn a_prompt_flag_is_placed_before_the_task() {
         let agent = by_id("opencode").expect("opencode is built in");
+        let (_, args) = agent.launch("fix the build");
+        assert_eq!(
+            args,
+            vec!["--prompt".to_string(), "fix the build".to_string()]
+        );
+    }
+
+    #[test]
+    fn pasted_agents_start_bare() {
+        let agent = by_id("aider").expect("aider is built in");
         let (_, args) = agent.launch("fix the build");
         assert!(args.is_empty());
         assert!(agent.needs_paste());
@@ -228,12 +341,24 @@ mod tests {
     #[test]
     fn an_empty_task_never_becomes_a_bare_argument() {
         let agent = by_id("codex").expect("codex is built in");
-        let (_, args) = agent.launch("");
+        let (_, args) = agent.launch("   ");
         assert!(args.is_empty());
     }
 
     #[test]
     fn unknown_ids_are_not_found() {
         assert!(by_id("definitely-not-an-agent").is_none());
+    }
+
+    #[test]
+    fn a_program_that_cannot_exist_does_not_resolve() {
+        assert!(resolve_program("hyperpane-not-a-real-program-xyz").is_none());
+    }
+
+    #[test]
+    fn an_unresolved_program_is_left_for_the_shell_to_report() {
+        let (program, args) = spawn_argv("hyperpane-not-a-real-program-xyz", &[]);
+        assert_eq!(program, "hyperpane-not-a-real-program-xyz");
+        assert!(args.is_empty());
     }
 }

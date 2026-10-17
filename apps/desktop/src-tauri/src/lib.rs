@@ -4,9 +4,11 @@
 //! *state*. Commands return the whole workspace after a layout change so the UI
 //! never has to guess what the tree looks like.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hp_agents::result::{ResultScanner, RunResult};
 use hp_core::{Session, SplitDirection, Workspace};
 use hp_pty::{EventSink, PaneManager, PaneSpec, PtyEvent};
 use hp_store::SessionStore;
@@ -15,6 +17,15 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
 
+/// What the app knows about an agent pane beyond its process.
+#[derive(Default)]
+struct RunState {
+    agent: Option<String>,
+    result: Option<RunResult>,
+    /// Watches the pane's output for the child's own `RESULT` line.
+    scanner: ResultScanner,
+}
+
 /// Shared application state. The PTY manager is behind an `Arc` because
 /// channel callbacks outlive the command that created them.
 struct AppState {
@@ -22,16 +33,28 @@ struct AppState {
     store: SessionStore,
     /// Where generated shell integration scripts are written.
     integration_dir: PathBuf,
+    /// Where agent worktrees are created. Outside any repository, so opening a
+    /// pane never changes a person's checkout.
+    worktree_dir: PathBuf,
+    /// Per-pane agent state, keyed by pane id.
+    runs: Arc<Mutex<HashMap<String, RunState>>>,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
 }
 
 impl AppState {
-    fn new(store: SessionStore, integration_dir: PathBuf, workspace: Option<Workspace>) -> Self {
+    fn new(
+        store: SessionStore,
+        integration_dir: PathBuf,
+        worktree_dir: PathBuf,
+        workspace: Option<Workspace>,
+    ) -> Self {
         Self {
             panes: Arc::new(PaneManager::new()),
             store,
             integration_dir,
+            worktree_dir,
+            runs: Arc::new(Mutex::new(HashMap::new())),
             workspace: Mutex::new(workspace),
         }
     }
@@ -144,15 +167,47 @@ fn pane_spawn(
 ) -> Result<(), String> {
     if spec.integration {
         let program = spec.shell.clone().unwrap_or_else(hp_pty::resolve_shell);
+        let (program, args) = hp_agents::spawn_argv(&program, &spec.args);
         // Fail soft: a shell integration problem must never stop a person from
         // opening a terminal.
-        match hp_shell::integrate(&program, &spec.args, &state.integration_dir) {
-            Ok(args) => spec.args = args,
+        match hp_shell::integrate(&program, &args, &state.integration_dir) {
+            Ok(prepared) => {
+                spec.shell = Some(program);
+                spec.args = prepared;
+            }
             Err(error) => eprintln!("hyperpane: shell integration unavailable: {error}"),
         }
+    } else if !spec.args.is_empty() {
+        // An agent started with a task needs the same treatment: an npm CLI is
+        // a batch shim, which the Windows process API will not start directly.
+        let program = spec.shell.clone().unwrap_or_else(hp_pty::resolve_shell);
+        let (program, args) = hp_agents::spawn_argv(&program, &spec.args);
+        spec.shell = Some(program);
+        spec.args = args;
     }
 
+    let pane_id = spec.id.clone();
+    if spec.agent.is_some() {
+        state.runs.lock().insert(
+            pane_id.clone(),
+            RunState {
+                agent: spec.agent.clone(),
+                ..RunState::default()
+            },
+        );
+    }
+
+    let runs = Arc::clone(&state.runs);
     let sink: EventSink = Arc::new(move |event| {
+        // A child's report is read from the stream it already writes to; no
+        // extra channel is needed, and the terminal still receives every byte.
+        if let PtyEvent::Data { chunk } = &event {
+            if let Some(run) = runs.lock().get_mut(&pane_id) {
+                if let Some(result) = run.scanner.push(chunk) {
+                    run.result = Some(result);
+                }
+            }
+        }
         // A closed window means the webview is gone; dropping the event is fine.
         let _ = on_event.send(event);
     });
@@ -174,6 +229,7 @@ fn pane_resize(id: String, cols: u16, rows: u16, state: State<'_, AppState>) -> 
 
 #[tauri::command]
 fn pane_close(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.runs.lock().remove(&id);
     state.panes.kill(&id).map_err(|e| e.to_string())
 }
 
@@ -209,6 +265,101 @@ fn home_directory() -> Option<String> {
 #[tauri::command]
 fn agent_catalogue() -> Vec<hp_agents::AgentSpec> {
     hp_agents::catalogue().to_vec()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAvailability {
+    id: &'static str,
+    label: &'static str,
+    program: &'static str,
+    installed: bool,
+}
+
+/// Which catalogue agents are actually on this machine.
+#[tauri::command]
+fn agents_available() -> Vec<AgentAvailability> {
+    hp_agents::catalogue()
+        .iter()
+        .map(|agent| AgentAvailability {
+            id: agent.id,
+            label: agent.label,
+            program: agent.program,
+            installed: agent.is_installed(),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentLaunch {
+    program: String,
+    args: Vec<String>,
+    /// The task has to be typed in once the agent is up.
+    needs_paste: bool,
+    label: &'static str,
+}
+
+/// How to start one agent, already wrapped for the platform.
+#[tauri::command]
+fn agent_launch(agent: String, task: String) -> Result<AgentLaunch, String> {
+    let spec = hp_agents::by_id(&agent).ok_or_else(|| {
+        format!(
+            "unknown agent {agent}; known ids are {}",
+            hp_agents::known_ids().join(", ")
+        )
+    })?;
+
+    let (program, args) = spec.launch(&task);
+    let (program, args) = hp_agents::spawn_argv(program, &args);
+
+    Ok(AgentLaunch {
+        program,
+        args,
+        needs_paste: spec.needs_paste(),
+        label: spec.label,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeInfo {
+    path: String,
+    branch: String,
+}
+
+/// Create a worktree for an agent run and report where it is.
+#[tauri::command]
+fn agent_worktree(
+    repo: String,
+    seed: String,
+    state: State<'_, AppState>,
+) -> Result<WorktreeInfo, String> {
+    let branch = hp_agents::worktree::branch_name(&seed);
+    let worktree = hp_agents::worktree::create(Path::new(&repo), &state.worktree_dir, &branch)
+        .map_err(|error| error.to_string())?;
+
+    Ok(WorktreeInfo {
+        path: worktree.path.display().to_string(),
+        branch: worktree.branch,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaneRunState {
+    agent: Option<String>,
+    /// The child's own last `RESULT` line. A claim, not a fact.
+    result: Option<RunResult>,
+}
+
+/// What an agent pane has reported so far.
+#[tauri::command]
+fn pane_run_state(id: String, state: State<'_, AppState>) -> Option<PaneRunState> {
+    state.runs.lock().get(&id).map(|run| PaneRunState {
+        agent: run.agent.clone(),
+        result: run.result.clone(),
+    })
 }
 
 /// Read the stored session, including the layout to restore.
@@ -253,6 +404,7 @@ pub fn run() {
             app.manage(AppState::new(
                 store,
                 directory.join("integration"),
+                directory.join("worktrees"),
                 session.workspace,
             ));
             Ok(())
@@ -272,6 +424,10 @@ pub fn run() {
             pane_list,
             app_info,
             agent_catalogue,
+            agents_available,
+            agent_launch,
+            agent_worktree,
+            pane_run_state,
             session_load,
             session_save,
             session_path,

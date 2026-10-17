@@ -34,6 +34,8 @@ pub enum PtyError {
     NotFound(PaneId),
     #[error("pane already exists: {0}")]
     AlreadyExists(PaneId),
+    #[error("pane is closing: {0}")]
+    Closing(PaneId),
 }
 
 /// One event emitted by a pane, in order.
@@ -100,6 +102,10 @@ pub struct PaneSpec {
     /// care either way.
     #[serde(default = "default_true")]
     pub integration: bool,
+    /// Catalogue id when this pane runs an agent, so the app can watch for its
+    /// report. `None` for a plain shell.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -143,9 +149,10 @@ fn which(program: &str) -> bool {
 
 struct PaneSession {
     /// Kept alive so the master side of the PTY is not dropped while the child
-    /// runs; dropping it would close the terminal.
-    _master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// runs. Dropping it closes the terminal, which is why `drop` takes it
+    /// before waiting on anything.
+    master: Option<Box<dyn MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     reader: Option<thread::JoinHandle<()>>,
     waiter: Option<thread::JoinHandle<()>>,
@@ -154,13 +161,36 @@ struct PaneSession {
 impl Drop for PaneSession {
     fn drop(&mut self) {
         let _ = self.killer.kill();
+
+        // Order matters, and getting it wrong froze the app. A custom `Drop`
+        // runs *before* the struct's fields are dropped, so a join here waits
+        // for a read that can only end once the master side is gone, and the
+        // master is still very much alive at this point. Close our end first.
+        self.master.take();
+        self.writer.take();
+
+        // Even with the master closed, a descendant of the child can hold the
+        // pty open, and the read would not return for as long as it lives.
+        // Waiting for that on the caller's thread blocks whoever asked for the
+        // close - and a window close runs here, which is exactly how an app
+        // ends up "not responding". So the wait happens to the side, and
+        // nobody waits for the wait.
         if let Some(handle) = self.reader.take() {
-            let _ = handle.join();
+            reap(handle);
         }
         if let Some(handle) = self.waiter.take() {
-            let _ = handle.join();
+            reap(handle);
         }
     }
+}
+
+/// Waits for a pane thread without making anyone else wait for it.
+fn reap(handle: thread::JoinHandle<()>) {
+    let _ = thread::Builder::new()
+        .name("hp-pty-reap".to_string())
+        .spawn(move || {
+            let _ = handle.join();
+        });
 }
 
 /// Owns every live pane in the process.
@@ -287,8 +317,8 @@ impl PaneManager {
         panes.insert(
             spec.id,
             PaneSession {
-                _master: pair.master,
-                writer,
+                master: Some(pair.master),
+                writer: Some(writer),
                 killer,
                 reader: Some(reader_handle),
                 waiter: Some(waiter_handle),
@@ -303,9 +333,13 @@ impl PaneManager {
         let pane = panes
             .get_mut(id)
             .ok_or_else(|| PtyError::NotFound(id.to_string()))?;
-        pane.writer
+        let writer = pane
+            .writer
+            .as_mut()
+            .ok_or_else(|| PtyError::Closing(id.to_string()))?;
+        writer
             .write_all(data.as_bytes())
-            .and_then(|_| pane.writer.flush())
+            .and_then(|_| writer.flush())
             .map_err(|e| PtyError::Backend(e.to_string()))
     }
 
@@ -315,7 +349,9 @@ impl PaneManager {
         let pane = panes
             .get(id)
             .ok_or_else(|| PtyError::NotFound(id.to_string()))?;
-        pane._master
+        pane.master
+            .as_ref()
+            .ok_or_else(|| PtyError::Closing(id.to_string()))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -729,6 +765,65 @@ mod tests {
             scanner.push(&"x".repeat(1024));
         }
         assert!(scanner.extractor.pending.len() <= OscExtractor::MAX_PENDING);
+    }
+
+    /// Closing a pane must not wait on a descendant that holds the pty open.
+    ///
+    /// This is the defect that made the window show "not responding". A custom
+    /// `Drop` runs before the struct's fields are dropped, so joining the reader
+    /// there waits for a read that can only finish once the master side is gone.
+    /// It was still open. A grandchild holding the pty keeps the read alive even
+    /// after the child is killed, so the wait had no end.
+    #[cfg(windows)]
+    #[test]
+    fn killing_a_pane_returns_even_when_a_grandchild_holds_the_pty() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let manager = Arc::new(PaneManager::new());
+        let sink: EventSink = Arc::new(|_| {});
+        manager
+            .spawn(
+                PaneSpec {
+                    id: "p".to_string(),
+                    cwd: None,
+                    shell: Some("cmd.exe".to_string()),
+                    // `start /b` detaches a process that inherits the pty.
+                    args: vec![
+                        "/c".to_string(),
+                        "start /b cmd /c ping -n 15 127.0.0.1 >nul".to_string(),
+                    ],
+                    env: Default::default(),
+                    cols: 80,
+                    rows: 24,
+                    integration: false,
+                    agent: None,
+                },
+                sink,
+            )
+            .expect("spawn");
+
+        // Let the grandchild start and inherit the handles.
+        std::thread::sleep(Duration::from_millis(1500));
+
+        let worker = Arc::clone(&manager);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = worker.kill("p");
+            let _ = sender.send((started.elapsed(), outcome.is_ok()));
+        });
+
+        match receiver.recv_timeout(Duration::from_secs(6)) {
+            Ok((elapsed, succeeded)) => {
+                assert!(succeeded, "kill reported a failure");
+                assert!(
+                    elapsed < Duration::from_secs(5),
+                    "closing a pane took {elapsed:?}; it must not wait on the pty"
+                );
+            }
+            Err(_) => panic!("closing a pane did not return within 6 s: it is blocking"),
+        }
     }
 
     #[test]

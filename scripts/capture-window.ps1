@@ -18,6 +18,10 @@ param(
     # Ctrl+Shift+E.
     [string[]]$Keys = @(),
     [int]$KeyDelayMs = 1500,
+    # How long to let the app settle after the last keystroke before sampling.
+    [int]$SettleMs = 700,
+    # Capture the app's own stderr, which is where a panic lands.
+    [string]$ErrorLog = "",
     [switch]$KeepRunning
 )
 
@@ -115,7 +119,13 @@ public static class WinCap {
 
 $exePath = (Resolve-Path $Exe).Path
 Write-Host "launching $exePath"
-$process = Start-Process -FilePath $exePath -PassThru
+$startArgs = @{ FilePath = $exePath; PassThru = $true }
+if ($ErrorLog) {
+    $logPath = [System.IO.Path]::GetFullPath($ErrorLog)
+    $startArgs.RedirectStandardError = $logPath
+    $startArgs.RedirectStandardOutput = "$logPath.out"
+}
+$process = Start-Process @startArgs
 
 $handle = [IntPtr]::Zero
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
@@ -170,6 +180,12 @@ for ($attempt = 1; $attempt -le 10; $attempt++) {
 Write-Host "app in foreground: $focused (attempt $attempt)"
 Start-Sleep -Milliseconds 900
 
+$process.Refresh()
+if ($process.HasExited) {
+    Write-Host "the app exited during focus, with code $($process.ExitCode)"
+    exit 1
+}
+
 if ($Keys.Count -gt 0) {
     Add-Type -AssemblyName System.Windows.Forms
 
@@ -185,16 +201,39 @@ if ($Keys.Count -gt 0) {
     }
 
     foreach ($sequence in $Keys) {
+        # Re-acquire the foreground before every sequence. A window can lose it
+        # between keystrokes, and typing an ENTER into whatever took it is not a
+        # mistake worth making.
+        $held = $false
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            if ([WinCap]::GetForegroundWindow() -eq $handle) { $held = $true; break }
+            [void][WinCap]::ForceForeground($handle)
+            Start-Sleep -Milliseconds 350
+        }
+        if (-not $held) {
+            Write-Warning "the app is not in the foreground; stopping before '$sequence'"
+            break
+        }
+
         Write-Host "sending keys '$sequence'"
         [System.Windows.Forms.SendKeys]::SendWait($sequence)
         Start-Sleep -Milliseconds $KeyDelayMs
 
-        if ([WinCap]::GetForegroundWindow() -ne $handle) {
-            Write-Warning "the app lost the foreground while sending keys; the shot may not show the intended state"
-            break
+        $process.Refresh()
+        if ($process.HasExited) {
+            Write-Host "the app exited after '$sequence', with code $($process.ExitCode)"
+            exit 1
         }
     }
-    Start-Sleep -Milliseconds 700
+
+    Start-Sleep -Milliseconds $SettleMs
+
+    $process.Refresh()
+    if ($process.HasExited) {
+        Write-Host "the app exited while settling, with code $($process.ExitCode)"
+        exit 1
+    }
+    Write-Host "the app is still alive after the keys"
 }
 
 # GetWindowRect includes the drop shadow on Windows 10 and later, so it would
@@ -252,7 +291,22 @@ $bitmap.Dispose()
 Write-Host "saved $outPath"
 
 if (-not $KeepRunning) {
-    $process.Kill()
-    Start-Sleep -Milliseconds 500
-    Write-Host "app closed"
+    $process.Refresh()
+    if ($process.HasExited) {
+        Write-Host "the app had ALREADY exited with code $($process.ExitCode) before the script closed it"
+    } else {
+        # Ask it to close, which is what a person clicking the X does. A hang
+        # during shutdown shows up here rather than in a forced kill.
+        $process.CloseMainWindow() | Out-Null
+        Start-Sleep -Milliseconds 1200
+        $process.Refresh()
+        if (-not $process.HasExited) {
+            $process.Kill()
+            Start-Sleep -Milliseconds 400
+            $process.Refresh()
+            Write-Host "app did not close on request; force-killed"
+        } else {
+            Write-Host "app closed on request (exit code $($process.ExitCode))"
+        }
+    }
 }
