@@ -21,9 +21,13 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Command palette (`mod+shift+p`) with fuzzy filtering
 - [x] OSC 7 working directory in the pane header
 - [x] Pane titles from OSC 0/2, with the profile name as a fallback
-- [ ] Shell integration: install the hooks that make OSC 7 and OSC 133 fire
-      (PowerShell does not report its directory on its own)
-- [ ] OSC 133 prompt marks: exit code and command duration per command
+- [x] Shell integration: generated hooks (PowerShell via `-EncodedCommand`,
+      bash via `--rcfile`) that make OSC 7 and OSC 133 fire
+- [x] Exit status of the last command, shown in the pane header
+- [ ] Command duration (bash has it via `PS0`; PowerShell needs a PSReadLine
+      hook, which is invasive and has to be measured before shipping)
+- [ ] Jump to the previous or next prompt in the scrollback (the marks are
+      parsed and delivered; nothing consumes them yet)
 - [ ] Profile editor in the UI (the model and persistence are in place)
 
 ## P2 — agents

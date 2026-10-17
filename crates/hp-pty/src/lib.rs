@@ -48,6 +48,34 @@ pub enum PtyEvent {
     Error { message: String },
     /// The shell reported its working directory with an OSC 7 sequence.
     Cwd { path: String },
+    /// The shell reported a prompt boundary with an OSC 133 sequence.
+    ///
+    /// The field is `mark` and not `kind`, because the variant tag already owns
+    /// that name: two fields called `kind` would produce a duplicate JSON key.
+    ///
+    /// `rename_all` is repeated here on purpose. At the container level it
+    /// renames variants only, so without this the field would go out as
+    /// `exit_code` and the frontend, which reads `exitCode`, would silently see
+    /// nothing.
+    #[serde(rename_all = "camelCase")]
+    Prompt {
+        mark: PromptKind,
+        exit_code: Option<i32>,
+    },
+}
+
+/// Which boundary of a prompt an `OSC 133` mark announces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptKind {
+    /// The prompt starts here.
+    PromptStart,
+    /// The prompt ends, so a typed command starts here.
+    PromptEnd,
+    /// The command began executing.
+    CommandStart,
+    /// The command finished.
+    CommandEnd,
 }
 
 /// Everything needed to open one pane.
@@ -67,6 +95,15 @@ pub struct PaneSpec {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// Whether the shell should load HyperPane's prompt hooks. Applied by the
+    /// app layer, which knows where the scripts live; the PTY itself does not
+    /// care either way.
+    #[serde(default = "default_true")]
+    pub integration: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_cols() -> u16 {
@@ -199,6 +236,7 @@ impl PaneManager {
             .spawn(move || {
                 let mut decoder = Utf8Stream::default();
                 let mut directories = Osc7Scanner::default();
+                let mut prompts = Osc133Scanner::default();
                 let mut buf = [0u8; READ_BUF];
                 loop {
                     match reader.read(&mut buf) {
@@ -208,11 +246,23 @@ impl PaneManager {
                             if chunk.is_empty() {
                                 continue;
                             }
-                            // The directory report travels beside the output
-                            // rather than replacing it: the terminal still
-                            // needs the bytes it was sent.
+                            // Reports travel beside the output rather than
+                            // replacing it: the terminal still needs the bytes
+                            // it was sent.
                             if let Some(path) = directories.push(&chunk) {
                                 reader_sink(PtyEvent::Cwd { path });
+                            }
+                            if let Some(mark) = prompts.push(&chunk) {
+                                let (prompt_mark, exit_code) = match mark {
+                                    PromptMark::Start => (PromptKind::PromptStart, None),
+                                    PromptMark::End => (PromptKind::PromptEnd, None),
+                                    PromptMark::CommandStart => (PromptKind::CommandStart, None),
+                                    PromptMark::CommandEnd(code) => (PromptKind::CommandEnd, code),
+                                };
+                                reader_sink(PtyEvent::Prompt {
+                                    mark: prompt_mark,
+                                    exit_code,
+                                });
                             }
                             reader_sink(PtyEvent::Data { chunk });
                         }
@@ -366,40 +416,40 @@ impl Utf8Stream {
 /// The start of an OSC 7 report: `ESC ] 7 ;`.
 const OSC7_PREFIX: &str = "\x1b]7;";
 
-/// Pulls working-directory reports out of the output stream.
+/// The start of an OSC 133 prompt mark: `ESC ] 133 ;`.
+const OSC133_PREFIX: &str = "\x1b]133;";
+
+/// Pulls complete OSC sequences with one prefix out of the output stream.
 ///
-/// Shells that support it announce the current directory as
-/// `ESC ] 7 ; file://HOST/PATH` terminated by BEL or `ESC \`. It arrives mixed
-/// into ordinary output and can be split across two reads, so an incomplete
-/// sequence is held until the next chunk completes it.
+/// Reports arrive mixed into ordinary output and can be split across two reads,
+/// so an incomplete sequence is held until the next chunk completes it.
 ///
 /// The bytes are not removed from the stream: the terminal still receives
 /// everything the child wrote.
 #[derive(Default)]
-struct Osc7Scanner {
+struct OscExtractor {
     pending: String,
 }
 
-impl Osc7Scanner {
-    /// A report is a URL, not a document; anything longer is not one.
+impl OscExtractor {
+    /// A report is a URL or a marker, not a document; anything longer is not.
     const MAX_PENDING: usize = 8 * 1024;
 
-    /// Feed decoded output. Returns the directory from the last complete
-    /// report in this chunk, if any.
-    fn push(&mut self, chunk: &str) -> Option<String> {
+    /// Feed decoded output; return the payload of every complete report.
+    fn drain(&mut self, chunk: &str, prefix: &str) -> Vec<String> {
         self.pending.push_str(chunk);
-        let mut latest: Option<String> = None;
+        let mut payloads = Vec::new();
 
         loop {
-            let Some(start) = self.pending.find(OSC7_PREFIX) else {
+            let Some(start) = self.pending.find(prefix) else {
                 // Keep only a tail that could still become the marker.
-                let keep = partial_marker_len(&self.pending);
+                let keep = partial_marker_len(&self.pending, prefix);
                 let cut = self.pending.len() - keep;
                 self.pending.drain(..cut);
                 break;
             };
 
-            let after = start + OSC7_PREFIX.len();
+            let after = start + prefix.len();
             let Some((payload_len, terminator_len)) = find_terminator(&self.pending[after..])
             else {
                 // The report has not finished arriving yet.
@@ -407,24 +457,80 @@ impl Osc7Scanner {
                 break;
             };
 
-            let payload = self.pending[after..after + payload_len].to_string();
-            if let Some(path) = file_url_to_path(&payload) {
-                latest = Some(path);
-            }
+            payloads.push(self.pending[after..after + payload_len].to_string());
             self.pending.drain(..after + payload_len + terminator_len);
         }
 
         if self.pending.len() > Self::MAX_PENDING {
             self.pending.clear();
         }
-        latest
+        payloads
     }
 }
 
-/// Length of the longest proper prefix of the marker that `text` ends with.
-fn partial_marker_len(text: &str) -> usize {
+/// Reads working-directory reports (`OSC 7`).
+#[derive(Default)]
+struct Osc7Scanner {
+    extractor: OscExtractor,
+}
+
+impl Osc7Scanner {
+    /// The directory from the last complete report in this chunk, if any.
+    fn push(&mut self, chunk: &str) -> Option<String> {
+        self.extractor
+            .drain(chunk, OSC7_PREFIX)
+            .into_iter()
+            .filter_map(|payload| file_url_to_path(&payload))
+            .next_back()
+    }
+}
+
+/// A prompt boundary reported with `OSC 133`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptMark {
+    /// `A`: the prompt starts here.
+    Start,
+    /// `B`: the prompt ends, so the command starts here.
+    End,
+    /// `C`: the command began executing.
+    CommandStart,
+    /// `D;<status>`: the command finished.
+    CommandEnd(Option<i32>),
+}
+
+/// Reads prompt marks (`OSC 133`).
+#[derive(Default)]
+struct Osc133Scanner {
+    extractor: OscExtractor,
+}
+
+impl Osc133Scanner {
+    /// The last mark in this chunk, if any.
+    fn push(&mut self, chunk: &str) -> Option<PromptMark> {
+        self.extractor
+            .drain(chunk, OSC133_PREFIX)
+            .into_iter()
+            .filter_map(|payload| parse_prompt_mark(&payload))
+            .next_back()
+    }
+}
+
+/// Parses `A`, `B`, `C`, or `D;<status>`.
+fn parse_prompt_mark(payload: &str) -> Option<PromptMark> {
+    let (kind, rest) = payload.split_once(';').unwrap_or((payload, ""));
+    match kind {
+        "A" => Some(PromptMark::Start),
+        "B" => Some(PromptMark::End),
+        "C" => Some(PromptMark::CommandStart),
+        "D" => Some(PromptMark::CommandEnd(rest.trim().parse::<i32>().ok())),
+        _ => None,
+    }
+}
+
+/// Length of the longest proper prefix of `prefix` that `text` ends with.
+fn partial_marker_len(text: &str, prefix: &str) -> usize {
     let bytes = text.as_bytes();
-    let marker = OSC7_PREFIX.as_bytes();
+    let marker = prefix.as_bytes();
     for len in (1..marker.len()).rev() {
         if bytes.len() >= len && bytes[bytes.len() - len..] == marker[..len] {
             return len;
@@ -622,6 +728,101 @@ mod tests {
         for _ in 0..100 {
             scanner.push(&"x".repeat(1024));
         }
-        assert!(scanner.pending.len() <= Osc7Scanner::MAX_PENDING);
+        assert!(scanner.extractor.pending.len() <= OscExtractor::MAX_PENDING);
+    }
+
+    #[test]
+    fn reads_each_prompt_mark() {
+        let mut scanner = Osc133Scanner::default();
+        assert_eq!(scanner.push("\x1b]133;A\x07"), Some(PromptMark::Start));
+        assert_eq!(scanner.push("\x1b]133;B\x07"), Some(PromptMark::End));
+        assert_eq!(
+            scanner.push("\x1b]133;C\x1b\\"),
+            Some(PromptMark::CommandStart)
+        );
+    }
+
+    #[test]
+    fn reads_the_status_from_a_command_end_mark() {
+        let mut scanner = Osc133Scanner::default();
+        assert_eq!(
+            scanner.push("\x1b]133;D;0\x07"),
+            Some(PromptMark::CommandEnd(Some(0)))
+        );
+        assert_eq!(
+            scanner.push("\x1b]133;D;130\x07"),
+            Some(PromptMark::CommandEnd(Some(130)))
+        );
+    }
+
+    #[test]
+    fn a_command_end_mark_without_a_status_is_still_a_mark() {
+        let mut scanner = Osc133Scanner::default();
+        assert_eq!(
+            scanner.push("\x1b]133;D\x07"),
+            Some(PromptMark::CommandEnd(None))
+        );
+    }
+
+    #[test]
+    fn completes_a_prompt_mark_split_across_two_reads() {
+        let mut scanner = Osc133Scanner::default();
+        assert_eq!(scanner.push("out\x1b]13"), None);
+        assert_eq!(
+            scanner.push("3;D;1\x07more").as_ref(),
+            Some(&PromptMark::CommandEnd(Some(1)))
+        );
+    }
+
+    #[test]
+    fn a_directory_report_is_not_a_prompt_mark() {
+        let mut scanner = Osc133Scanner::default();
+        assert_eq!(scanner.push("\x1b]7;file://h/tmp\x07"), None);
+    }
+
+    #[test]
+    fn an_unknown_mark_is_ignored() {
+        let mut scanner = Osc133Scanner::default();
+        assert_eq!(scanner.push("\x1b]133;Z\x07"), None);
+    }
+
+    /// The event crosses a JSON boundary into TypeScript, which reads
+    /// `exitCode`. A snake_case field there fails silently: the frontend sees
+    /// `undefined` and draws an empty badge.
+    #[test]
+    fn a_prompt_event_serialises_with_camel_case_fields() {
+        let event = PtyEvent::Prompt {
+            mark: PromptKind::CommandEnd,
+            exit_code: Some(7),
+        };
+        let json = serde_json::to_string(&event).expect("serialise");
+
+        assert!(json.contains(r#""kind":"prompt""#), "{json}");
+        assert!(json.contains(r#""mark":"commandEnd""#), "{json}");
+        assert!(json.contains(r#""exitCode":7"#), "{json}");
+        assert!(
+            !json.contains("exit_code"),
+            "field kept its Rust name: {json}"
+        );
+    }
+
+    #[test]
+    fn a_prompt_end_event_has_no_status() {
+        let event = PtyEvent::Prompt {
+            mark: PromptKind::PromptEnd,
+            exit_code: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialise");
+        assert!(json.contains(r#""mark":"promptEnd""#), "{json}");
+        assert!(json.contains(r#""exitCode":null"#), "{json}");
+    }
+
+    #[test]
+    fn a_directory_event_keeps_its_field_names() {
+        let event = PtyEvent::Cwd {
+            path: "C:/src".to_string(),
+        };
+        let json = serde_json::to_string(&event).expect("serialise");
+        assert_eq!(json, r#"{"kind":"cwd","path":"C:/src"}"#);
     }
 }

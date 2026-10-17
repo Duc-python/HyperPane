@@ -135,6 +135,7 @@ mod tests {
             args: vec!["-NoLogo".into()],
             cwd: None,
             env: Default::default(),
+            integration: true,
         });
         session.default_profile = Some("pwsh".into());
 

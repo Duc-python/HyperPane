@@ -5,6 +5,7 @@ members = [
     "crates/hp-core",
     "crates/hp-agents",
     "crates/hp-store",
+    "crates/hp-shell",
     "apps/desktop/src-tauri",
 ]
 
@@ -20,6 +21,7 @@ hp-pty = { path = "crates/hp-pty" }
 hp-core = { path = "crates/hp-core" }
 hp-agents = { path = "crates/hp-agents" }
 hp-store = { path = "crates/hp-store" }
+hp-shell = { path = "crates/hp-shell" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

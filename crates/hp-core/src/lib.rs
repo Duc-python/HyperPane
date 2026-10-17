@@ -286,6 +286,10 @@ pub struct Profile {
     pub cwd: Option<String>,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Whether HyperPane's prompt hooks are loaded into this shell. Only a
+    /// shell the app knows how to instrument is touched at all.
+    #[serde(default = "default_true")]
+    pub integration: bool,
 }
 
 impl Profile {
@@ -298,6 +302,7 @@ impl Profile {
             args: Vec::new(),
             cwd: None,
             env: Default::default(),
+            integration: true,
         }
     }
 }
@@ -530,6 +535,7 @@ mod tests {
             args: vec![],
             cwd: None,
             env: Default::default(),
+            integration: true,
         });
         session.default_profile = Some("does-not-exist".into());
         assert_eq!(
@@ -553,6 +559,7 @@ mod tests {
             env: [("TERM".to_string(), "xterm-256color".to_string())]
                 .into_iter()
                 .collect(),
+            integration: false,
         });
 
         let json = serde_json::to_string(&session).expect("serialize");

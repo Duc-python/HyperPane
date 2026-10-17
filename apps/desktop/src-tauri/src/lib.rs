@@ -4,6 +4,7 @@
 //! *state*. Commands return the whole workspace after a layout change so the UI
 //! never has to guess what the tree looks like.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use hp_core::{Session, SplitDirection, Workspace};
@@ -19,15 +20,18 @@ use tauri::{Manager, State};
 struct AppState {
     panes: Arc<PaneManager>,
     store: SessionStore,
+    /// Where generated shell integration scripts are written.
+    integration_dir: PathBuf,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
 }
 
 impl AppState {
-    fn new(store: SessionStore, workspace: Option<Workspace>) -> Self {
+    fn new(store: SessionStore, integration_dir: PathBuf, workspace: Option<Workspace>) -> Self {
         Self {
             panes: Arc::new(PaneManager::new()),
             store,
+            integration_dir,
             workspace: Mutex::new(workspace),
         }
     }
@@ -134,10 +138,20 @@ fn workspace_set_ratio(
 /// Open a pane and stream its output to `on_event`.
 #[tauri::command]
 fn pane_spawn(
-    spec: PaneSpec,
+    mut spec: PaneSpec,
     on_event: Channel<PtyEvent>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    if spec.integration {
+        let program = spec.shell.clone().unwrap_or_else(hp_pty::resolve_shell);
+        // Fail soft: a shell integration problem must never stop a person from
+        // opening a terminal.
+        match hp_shell::integrate(&program, &spec.args, &state.integration_dir) {
+            Ok(args) => spec.args = args,
+            Err(error) => eprintln!("hyperpane: shell integration unavailable: {error}"),
+        }
+    }
+
     let sink: EventSink = Arc::new(move |event| {
         // A closed window means the webview is gone; dropping the event is fine.
         let _ = on_event.send(event);
@@ -236,7 +250,11 @@ pub fn run() {
                 Session::empty()
             });
 
-            app.manage(AppState::new(store, session.workspace));
+            app.manage(AppState::new(
+                store,
+                directory.join("integration"),
+                session.workspace,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

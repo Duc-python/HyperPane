@@ -82,6 +82,8 @@ export function TerminalPane({
   const [status, setStatus] = useState<Status>("starting");
   const [title, setTitle] = useState<string>("");
   const [cwd, setCwd] = useState<string | null>(null);
+  /** Status of the last finished command, from OSC 133. */
+  const [exitCode, setExitCode] = useState<number | null>(null);
 
   // The profile is read once, when the pane opens. Editing a profile must not
   // kill a shell that is already running, so this is captured at mount rather
@@ -140,6 +142,7 @@ export function TerminalPane({
       args: chosen?.args ?? [],
       cwd: chosen?.cwd ?? null,
       env: chosen?.env ?? {},
+      integration: chosen?.integration ?? true,
     };
     void paneSpawn(spec, (event: PtyEvent) => {
       if (disposed) return;
@@ -162,6 +165,11 @@ export function TerminalPane({
           break;
         case "cwd":
           setCwd(event.path);
+          break;
+        case "prompt":
+          // Only the end of a command carries a status; the other marks are
+          // there for features that need prompt boundaries.
+          if (event.mark === "commandEnd") setExitCode(event.exitCode ?? null);
           break;
       }
     })
@@ -239,8 +247,18 @@ export function TerminalPane({
             {formatPath(cwd)}
           </span>
         ) : null}
-        <span className="ml-auto shrink-0 text-[10px] tracking-wide text-ink-faint uppercase">
-          {STATUS_LABEL[status]}
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          {exitCode !== null && exitCode !== 0 ? (
+            <span
+              className="rounded border border-danger/50 bg-danger/10 px-1 text-[9px] text-danger"
+              title={`The last command exited with status ${exitCode}`}
+            >
+              exit {exitCode}
+            </span>
+          ) : null}
+          <span className="text-[10px] tracking-wide text-ink-faint uppercase">
+            {STATUS_LABEL[status]}
+          </span>
         </span>
         {canClose ? (
           <button

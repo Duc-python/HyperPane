@@ -28,7 +28,15 @@ export type PtyEvent =
   | { kind: "exit"; code: number | null }
   | { kind: "error"; message: string }
   /** The shell reported its working directory (OSC 7). */
-  | { kind: "cwd"; path: string };
+  | { kind: "cwd"; path: string }
+  /** The shell reported a prompt boundary (OSC 133). */
+  | { kind: "prompt"; mark: PromptKind; exitCode: number | null };
+
+export type PromptKind =
+  | "promptStart"
+  | "promptEnd"
+  | "commandStart"
+  | "commandEnd";
 
 /** Mirrors `hp_pty::PaneSpec`. */
 export interface PaneSpec {
@@ -39,6 +47,8 @@ export interface PaneSpec {
   env?: Record<string, string>;
   cols?: number;
   rows?: number;
+  /** Load HyperPane's prompt hooks into the shell. */
+  integration?: boolean;
 }
 
 export interface AppInfo {
@@ -133,6 +143,8 @@ export interface Profile {
   args: string[];
   cwd: string | null;
   env: Record<string, string>;
+  /** Whether the shell loads HyperPane's prompt hooks. */
+  integration: boolean;
 }
 
 /** Mirrors `hp_core::Session`. */
