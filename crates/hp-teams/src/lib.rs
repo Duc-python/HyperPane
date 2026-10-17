@@ -11,8 +11,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod brief;
+pub mod run;
 
 pub use brief::{write_brief, BriefInput};
+pub use run::{Advance, Hold, RunState};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
