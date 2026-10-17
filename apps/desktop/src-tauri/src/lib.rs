@@ -29,13 +29,6 @@ impl AppState {
         }
     }
 
-    fn workspace(&self) -> Result<Workspace, String> {
-        self.workspace
-            .lock()
-            .clone()
-            .ok_or_else(|| "workspace is not initialised; call workspace_init first".to_string())
-    }
-
     fn update<F>(&self, change: F) -> Result<Workspace, String>
     where
         F: FnOnce(&mut Workspace),
@@ -153,13 +146,11 @@ fn pane_write(id: String, data: String, state: State<'_, AppState>) -> Result<()
 }
 
 #[tauri::command]
-fn pane_resize(
-    id: String,
-    cols: u16,
-    rows: u16,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    state.panes.resize(&id, cols, rows).map_err(|e| e.to_string())
+fn pane_resize(id: String, cols: u16, rows: u16, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .panes
+        .resize(&id, cols, rows)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

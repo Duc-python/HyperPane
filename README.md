@@ -9,6 +9,8 @@ collect results from other agents in visible panes beside it.
 Everything runs on your own machine. There is no account, no subscription and
 no server: coordination, sharing and multi-computer access are peer-to-peer.
 
+![HyperPane running a PowerShell session in a single pane](docs/screenshot.png)
+
 ## Status
 
 **P0 — skeleton.** Working: PTY layer, pane registry, split layout tree,

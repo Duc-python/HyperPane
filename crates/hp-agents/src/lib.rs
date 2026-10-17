@@ -57,9 +57,7 @@ impl AgentSpec {
     /// task afterwards.
     pub fn launch(&self, task: &str) -> (&'static str, Vec<String>) {
         match self.delivery {
-            Delivery::StartArgument if !task.is_empty() => {
-                (self.program, vec![task.to_string()])
-            }
+            Delivery::StartArgument if !task.is_empty() => (self.program, vec![task.to_string()]),
             _ => (self.program, Vec::new()),
         }
     }

@@ -76,6 +76,10 @@ impl LayoutNode {
 
     /// Replace `target` with a split of `target` and `new_pane`.
     ///
+    /// `target` keeps its slot and `new_pane` follows it: to the right for
+    /// `Row`, below for `Column`. That is what "split right" and "split down"
+    /// mean in a terminal.
+    ///
     /// Returns `false` when `target` is not in this tree, in which case the
     /// tree is unchanged.
     pub fn split_at(
@@ -164,7 +168,8 @@ impl LayoutNode {
             ..
         } = self
         {
-            let holds = |node: &LayoutNode| matches!(node, LayoutNode::Leaf { pane: id } if id == pane);
+            let holds =
+                |node: &LayoutNode| matches!(node, LayoutNode::Leaf { pane: id } if id == pane);
             if holds(first) || holds(second) {
                 *current = ratio.clamp(MIN_RATIO, MAX_RATIO);
                 return true;
@@ -285,8 +290,20 @@ mod tests {
         let mut w = ws();
         w.add_pane("p1", SplitDirection::Row, "p2");
         w.add_pane("p1", SplitDirection::Column, "p3");
-        // p3 sits above p1, so it comes first in visual order.
-        assert_eq!(w.layout.pane_ids(), vec!["p3", "p1", "p2"]);
+        // p1 keeps its slot, p3 follows it below, and p2 stays to the right of
+        // the whole column.
+        assert_eq!(w.layout.pane_ids(), vec!["p1", "p3", "p2"]);
+    }
+
+    #[test]
+    fn a_split_places_the_new_pane_after_the_existing_one() {
+        let mut right = ws();
+        right.add_pane("p1", SplitDirection::Row, "new");
+        assert_eq!(right.layout.pane_ids(), vec!["p1", "new"]);
+
+        let mut below = ws();
+        below.add_pane("p1", SplitDirection::Column, "new");
+        assert_eq!(below.layout.pane_ids(), vec!["p1", "new"]);
     }
 
     #[test]

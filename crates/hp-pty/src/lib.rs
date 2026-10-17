@@ -98,9 +98,7 @@ pub fn resolve_shell() -> String {
 #[cfg(windows)]
 fn which(program: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
         .unwrap_or(false)
 }
 
@@ -242,7 +240,9 @@ impl PaneManager {
     /// Send input to a pane's stdin.
     pub fn write(&self, id: &str, data: &str) -> Result<(), PtyError> {
         let mut panes = self.panes.lock();
-        let pane = panes.get_mut(id).ok_or_else(|| PtyError::NotFound(id.to_string()))?;
+        let pane = panes
+            .get_mut(id)
+            .ok_or_else(|| PtyError::NotFound(id.to_string()))?;
         pane.writer
             .write_all(data.as_bytes())
             .and_then(|_| pane.writer.flush())
@@ -252,7 +252,9 @@ impl PaneManager {
     /// Tell the PTY the viewport changed so full-screen programs can reflow.
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), PtyError> {
         let panes = self.panes.lock();
-        let pane = panes.get(id).ok_or_else(|| PtyError::NotFound(id.to_string()))?;
+        let pane = panes
+            .get(id)
+            .ok_or_else(|| PtyError::NotFound(id.to_string()))?;
         pane._master
             .resize(PtySize {
                 rows,
