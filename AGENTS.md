@@ -125,6 +125,13 @@ Each of these cost real debugging time. They are not hypothetical.
    directly shows `ERR_CONNECTION_REFUSED` unless Vite is up. Use `pnpm tauri
    dev`. Note also that Vite may bind `::1` only, so a `127.0.0.1` reachability
    check gives a false negative.
+6. **A Vietnamese input method rewrites injected keystrokes.** With a TELEX IME
+   active, `SendKeys.SendWait("worktree")` arrives as `ioktree`: `w` and `r` are
+   modifier keys in TELEX, and they transform the text on the way in. This is
+   the IME behaving correctly, not a bug in the app. When driving the app for a
+   screenshot, choose query text without `s f r x j z w` next to a vowel, or the
+   test will chase a character-loss ghost that does not exist. `tree` is a good
+   query; `worktree` is not.
 
 ## Definition of done
 
@@ -142,6 +149,19 @@ pwsh -File scripts/capture-window.ps1 -Exe target\debug\hyperpane.exe -Out shot.
 
 Then tick the line in `TODO.md` and commit. Small commits that each end green
 beat one large commit that does not.
+
+The app can be driven and photographed without a person at the screen:
+
+```powershell
+# Split twice, then photograph the result
+pwsh -File scripts/capture-window.ps1 -Exe target\debug\hyperpane.exe `
+  -Out shot.png -Keys @("^+e", "^+o") -ErrorLog app.err
+```
+
+`-Repeat` turns that into a soak run, `-ErrorLog` catches a panic, and the
+script reports handle and thread counts so a leak shows up as a climbing
+number. It refuses to send a keystroke unless the app holds the foreground,
+because the alternative is typing `{ENTER}` into somebody else's terminal.
 
 ## Reporting
 

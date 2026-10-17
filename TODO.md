@@ -37,7 +37,7 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Open an installed agent in a pane from the palette, task typed there
 - [x] Read the child's own `RESULT` line and show it as a claim
 - [x] Worktrees: create on `agent/<8>`, reuse, remove without deleting the branch
-- [ ] Give an agent pane its own worktree from the UI
+- [x] Give an agent pane its own worktree from the UI, shown in its header
 - [ ] Status detection: working / blocked / done, per agent
 - [ ] Token meter + budget guard (blocks above 85% of the 5-hour window)
 - [ ] Spawn approval card and audit log

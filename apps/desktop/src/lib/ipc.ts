@@ -202,6 +202,9 @@ export const agentWorktree = (repo: string, seed: string) =>
 export const paneRunState = (id: string) =>
   invoke<PaneRunState | null>("pane_run_state", { id });
 
+/** Where a pane's shell last said it was. */
+export const paneCwd = (id: string) => invoke<string | null>("pane_cwd", { id });
+
 export const sessionLoad = () => invoke<Session>("session_load");
 
 export const sessionSave = (session: Session) =>

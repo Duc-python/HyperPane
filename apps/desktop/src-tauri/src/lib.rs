@@ -38,6 +38,10 @@ struct AppState {
     worktree_dir: PathBuf,
     /// Per-pane agent state, keyed by pane id.
     runs: Arc<Mutex<HashMap<String, RunState>>>,
+    /// Where each pane's shell last said it was, from its own OSC 7 reports.
+    /// Opening a worktree for an agent needs a directory to fork from, and the
+    /// pane that has one is the pane the person is looking at.
+    directories: Arc<Mutex<HashMap<String, String>>>,
     /// `None` until the frontend opens its first pane.
     workspace: Mutex<Option<Workspace>>,
 }
@@ -55,6 +59,7 @@ impl AppState {
             integration_dir,
             worktree_dir,
             runs: Arc::new(Mutex::new(HashMap::new())),
+            directories: Arc::new(Mutex::new(HashMap::new())),
             workspace: Mutex::new(workspace),
         }
     }
@@ -198,15 +203,22 @@ fn pane_spawn(
     }
 
     let runs = Arc::clone(&state.runs);
+    let directories = Arc::clone(&state.directories);
     let sink: EventSink = Arc::new(move |event| {
         // A child's report is read from the stream it already writes to; no
         // extra channel is needed, and the terminal still receives every byte.
-        if let PtyEvent::Data { chunk } = &event {
-            if let Some(run) = runs.lock().get_mut(&pane_id) {
-                if let Some(result) = run.scanner.push(chunk) {
-                    run.result = Some(result);
+        match &event {
+            PtyEvent::Data { chunk } => {
+                if let Some(run) = runs.lock().get_mut(&pane_id) {
+                    if let Some(result) = run.scanner.push(chunk) {
+                        run.result = Some(result);
+                    }
                 }
             }
+            PtyEvent::Cwd { path } => {
+                directories.lock().insert(pane_id.clone(), path.clone());
+            }
+            _ => {}
         }
         // A closed window means the webview is gone; dropping the event is fine.
         let _ = on_event.send(event);
@@ -230,6 +242,7 @@ fn pane_resize(id: String, cols: u16, rows: u16, state: State<'_, AppState>) -> 
 #[tauri::command]
 fn pane_close(id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.runs.lock().remove(&id);
+    state.directories.lock().remove(&id);
     state.panes.kill(&id).map_err(|e| e.to_string())
 }
 
@@ -362,6 +375,12 @@ fn pane_run_state(id: String, state: State<'_, AppState>) -> Option<PaneRunState
     })
 }
 
+/// Where a pane's shell last said it was, if it reports that at all.
+#[tauri::command]
+fn pane_cwd(id: String, state: State<'_, AppState>) -> Option<String> {
+    state.directories.lock().get(&id).cloned()
+}
+
 /// Read the stored session, including the layout to restore.
 #[tauri::command]
 fn session_load(state: State<'_, AppState>) -> Result<Session, String> {
@@ -428,6 +447,7 @@ pub fn run() {
             agent_launch,
             agent_worktree,
             pane_run_state,
+            pane_cwd,
             session_load,
             session_save,
             session_path,

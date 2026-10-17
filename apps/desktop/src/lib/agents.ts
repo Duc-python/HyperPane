@@ -8,12 +8,17 @@ export interface PaneAgent {
   args: string[];
   /** The task has to be typed in once the agent is up. */
   needsPaste: boolean;
+  /** The directory this run is confined to, when it has one. */
+  cwd: string | null;
+  /** The branch of that directory, when it is a worktree. */
+  branch: string | null;
 }
 
 /** Resolve one catalogue agent into pane arguments. */
 export async function preparePaneAgent(
   agent: AgentInfo,
   task: string,
+  worktree: { path: string; branch: string } | null,
 ): Promise<PaneAgent> {
   const launch = await agentLaunch(agent.id, task);
   return {
@@ -22,6 +27,8 @@ export async function preparePaneAgent(
     program: launch.program,
     args: launch.args,
     needsPaste: launch.needsPaste,
+    cwd: worktree?.path ?? null,
+    branch: worktree?.branch ?? null,
   };
 }
 

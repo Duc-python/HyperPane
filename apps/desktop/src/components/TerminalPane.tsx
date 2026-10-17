@@ -192,7 +192,9 @@ export function TerminalPane({
           rows: term.rows,
           shell: agentPane.program,
           args: agentPane.args,
-          cwd: chosen?.cwd ?? null,
+          // A worktree run is confined to its own checkout; without one it
+          // starts where the profile says.
+          cwd: agentPane.cwd ?? chosen?.cwd ?? null,
           env: chosen?.env ?? {},
           // An agent CLI is not a shell. Prompt hooks typed into it would be
           // read as part of the conversation and confuse it.
@@ -382,6 +384,14 @@ export function TerminalPane({
             title={cwd}
           >
             {formatPath(cwd)}
+          </span>
+        ) : null}
+        {agent?.branch ? (
+          <span
+            className="shrink-0 rounded border border-line bg-raised px-1 text-[9px] text-ink-muted"
+            title={`This run is confined to the worktree on ${agent.branch}`}
+          >
+            {agent.branch}
           </span>
         ) : null}
         {result ? (

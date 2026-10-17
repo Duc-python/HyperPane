@@ -7,9 +7,11 @@ import {
   type ReactNode,
 } from "react";
 import {
+  agentWorktree,
   agentsAvailable,
   appInfo,
   paneClose,
+  paneCwd,
   paneIds,
   paneList,
   sessionLoad,
@@ -59,8 +61,14 @@ export default function App() {
   const [paneProfiles, setPaneProfiles] = useState<Record<string, string>>({});
   const [paneAgents, setPaneAgents] = useState<Record<string, PaneAgent>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
-  /** Set while the palette is asking for a task. */
-  const [pendingAgent, setPendingAgent] = useState<AgentInfo | null>(null);
+  /**
+   * Set while the palette is asking for a task. The worktree flag is decided
+   * when the agent is picked, because it is part of which entry was picked.
+   */
+  const [pendingAgent, setPendingAgent] = useState<{
+    agent: AgentInfo;
+    worktree: boolean;
+  } | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessionFile, setSessionFile] = useState<string | null>(null);
 
@@ -221,7 +229,7 @@ export default function App() {
 
   /** Open an agent in a new pane beside the focused one. */
   const spawnAgent = useCallback(
-    async (agent: AgentInfo, task: string) => {
+    async (agent: AgentInfo, task: string, useWorktree: boolean) => {
       const current = workspaceRef.current;
       if (!current) return;
       const target = current.focused ?? paneIds(current.layout)[0];
@@ -229,7 +237,20 @@ export default function App() {
 
       const id = `p${nextPane.current++}`;
       try {
-        const prepared = await preparePaneAgent(agent, task);
+        // The pane the person is looking at is the one with a repository in it,
+        // and its shell has already told us where that is.
+        let worktree: { path: string; branch: string } | null = null;
+        if (useWorktree) {
+          const repo = await paneCwd(target);
+          if (!repo) {
+            throw new Error(
+              "that pane has not reported a directory yet; run a command in it first",
+            );
+          }
+          worktree = await agentWorktree(repo, `${target}:${task}`);
+        }
+
+        const prepared = await preparePaneAgent(agent, task, worktree);
         // Both updates land in one render, so the new pane mounts with its
         // agent already known rather than starting a shell first.
         setPaneAgents((map) => ({ ...map, [id]: prepared }));
@@ -354,7 +375,15 @@ export default function App() {
         hint: agent.program,
         // The palette asks for the task next, in the same input.
         keepOpen: true,
-        run: () => setPendingAgent(agent),
+        run: () => setPendingAgent({ agent, worktree: false }),
+      });
+      list.push({
+        id: `agent.worktree.${agent.id}`,
+        title: `Run ${agent.label} in a worktree…`,
+        group: "Agent",
+        hint: "git",
+        keepOpen: true,
+        run: () => setPendingAgent({ agent, worktree: true }),
       });
     }
 
@@ -522,12 +551,12 @@ export default function App() {
       <CommandPalette
         open={paletteOpen}
         commands={commands}
-        taskFor={pendingAgent}
+        taskFor={pendingAgent ? pendingAgent.agent : null}
         onSubmitTask={(task) => {
-          const agent = pendingAgent;
+          const pending = pendingAgent;
           setPendingAgent(null);
           setPaletteOpen(false);
-          if (agent) void spawnAgent(agent, task);
+          if (pending) void spawnAgent(pending.agent, task, pending.worktree);
         }}
         onClose={() => {
           setPaletteOpen(false);
