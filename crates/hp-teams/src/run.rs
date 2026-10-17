@@ -172,6 +172,7 @@ mod tests {
             label: key.to_string(),
             wave,
             agent: "opencode".to_string(),
+            reason: "the role's first installed choice".to_string(),
             kind,
             tier: crate::Tier::Mid,
             read_only: matches!(kind, RoleKind::Checker | RoleKind::Leader),

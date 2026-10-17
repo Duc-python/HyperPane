@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod brief;
+pub mod router;
 pub mod run;
 
 pub use brief::{write_brief, BriefInput};
@@ -283,6 +284,8 @@ pub struct PlannedMember {
     pub wave: u32,
     /// The agent chosen for this member.
     pub agent: String,
+    /// Why that agent, in one line, so the preview can say.
+    pub reason: String,
     pub kind: RoleKind,
     pub tier: Tier,
     pub read_only: bool,
@@ -300,7 +303,9 @@ pub enum PlanError {
 
 /// Work out who does what, in what order, given which agents are installed.
 ///
-/// A role's agent list is a preference order, so the first one installed wins.
+/// Each role's agent list is a preference order, and `router` is what turns it
+/// into a choice - the first installed name wins, except that roles which only
+/// read are spread over the installed agents instead of all landing on one.
 /// Nothing else about the run is decided here: this is the part that can be
 /// wrong on its own, so it is the part worth testing.
 pub fn plan(
@@ -311,21 +316,29 @@ pub fn plan(
     ordered.sort_by_key(|wave| wave.wave);
 
     let mut members = Vec::new();
+    // What the reading members already have: within this wave, which is the
+    // independence that matters, and over the run, which breaks a tie. A
+    // reading role asks for the choice used least.
+    let mut wave_readings: Vec<String> = Vec::new();
+    let mut run_readings: Vec<String> = Vec::new();
 
     for wave in ordered {
+        wave_readings.clear();
         for role in &wave.roles {
-            let Some(agent) = role
-                .agents
-                .iter()
-                .find(|candidate| installed.contains(candidate.as_str()))
-            else {
-                return Err(PlanError::NoAgentForRole {
-                    role: role.key.clone(),
-                    named: role.agents.join(", "),
-                });
-            };
-
             for _ in 0..role.count.max(1) {
+                let Some(routed) = router::route(role, installed, &wave_readings, &run_readings)
+                else {
+                    return Err(PlanError::NoAgentForRole {
+                        role: role.key.clone(),
+                        named: role.agents.join(", "),
+                    });
+                };
+
+                if role.read_only {
+                    wave_readings.push(routed.agent.clone());
+                    run_readings.push(routed.agent.clone());
+                }
+
                 members.push(PlannedMember {
                     role: role.key.clone(),
                     label: role
@@ -334,7 +347,8 @@ pub fn plan(
                         .map(pick)
                         .unwrap_or_else(|| role.key.clone()),
                     wave: wave.wave,
-                    agent: agent.clone(),
+                    agent: routed.agent,
+                    reason: routed.reason,
                     kind: role.kind,
                     tier: role.tier,
                     read_only: role.read_only,
@@ -394,6 +408,34 @@ mod tests {
         assert!(
             problems.is_empty(),
             "shipped presets have problems: {problems:#?}"
+        );
+    }
+
+    #[test]
+    fn the_reviewer_preset_gives_its_three_reviewers_three_agents() {
+        let file = PresetFile::parse(SHIPPED).expect("parse");
+        let team = file.team("independent-review").expect("the preset");
+        let all: BTreeSet<String> = hp_agents::known_ids()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let members = plan(team, &all).expect("a plan");
+        let reviewers: Vec<&str> = members
+            .iter()
+            .filter(|member| member.wave == 1)
+            .map(|member| member.agent.as_str())
+            .collect();
+
+        // This preset exists so three people read the same diff without seeing
+        // each other. The same agent three times is one reader with one set of
+        // blind spots, which is what the router is there to avoid - and why the
+        // preset lists three names for each of them.
+        let distinct: BTreeSet<&str> = reviewers.iter().copied().collect();
+        assert_eq!(distinct.len(), reviewers.len(), "reviewers: {reviewers:?}");
+        assert!(
+            members.iter().all(|member| !member.reason.is_empty()),
+            "every member says why it got the agent it did"
         );
     }
 

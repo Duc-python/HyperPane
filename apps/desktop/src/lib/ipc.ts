@@ -289,6 +289,8 @@ export interface PlannedMember {
   label: string;
   wave: number;
   agent: string;
+  /** Why the router gave this member that agent, in one line. */
+  reason: string;
   kind: RoleKind;
   tier: Tier;
   readOnly: boolean;

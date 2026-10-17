@@ -74,13 +74,18 @@ green (tests, clippy, typecheck, and the app actually running).
       asked for by the frontend
 - [x] Gates: `humanPlan` is the Start button, `checkerPass` and `humanCommit`
       put a hold on screen with a button
-- [ ] Router: pick an agent for a task rather than following the preference list
+- [x] Router: a role's list is a preference order, and reading roles are spread
+      over the installed agents rather than all landing on the first installed
+      one — two readings by one agent share that agent's blind spots. Each
+      choice carries the reason it was made, and the plan preview shows it. A
+      role that writes keeps the preset's order.
 - [x] Team run view: a wave timeline with live status, rather than one line in
       the header and a bar when a hold is up
 - [x] Show what each member claimed when a wave finishes, and keep it after the
       pane closes. A member that printed no `RESULT` line reads "no report".
-- [ ] The findings themselves, not just the claim: ask read-only roles to write
-      what they found to a file, and show that on the hold.
+- [x] The findings themselves, not just the claim: the brief tells every member
+      where to write what it found, the app reads that file back when the wave
+      finishes and shows it on the hold, and an empty file is a valid answer.
 
 ## P4 — plugins
 

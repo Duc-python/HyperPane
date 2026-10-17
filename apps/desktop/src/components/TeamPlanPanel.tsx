@@ -141,7 +141,10 @@ export function TeamPlanPanel({ teamKey, onStart, onClose }: TeamPlanPanelProps)
                         <span className="w-32 shrink-0 truncate text-[11px] text-ink">
                           {member.label}
                         </span>
-                        <span className="w-24 shrink-0 truncate text-[10px] text-accent">
+                        <span
+                          className="w-24 shrink-0 cursor-help truncate text-[10px] text-accent"
+                          title={member.reason}
+                        >
                           {member.agent}
                         </span>
                         <span className="w-16 shrink-0 text-[10px] text-ink-faint">
