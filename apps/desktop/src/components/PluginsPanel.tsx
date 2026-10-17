@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  pluginsApprove,
   pluginsCall,
   pluginsList,
   pluginsOpen,
@@ -37,10 +38,14 @@ export function PluginsPanel({ onClose }: { onClose: () => void }) {
     load(pluginsList);
   }, []);
 
-  const start = (id: string) => {
+  const start = (server: { id: string; approved: boolean }) => {
+    const id = server.id;
     setBusy(id);
     setError(null);
-    void pluginsOpen(id)
+    // A command nobody has read is not started: approving it is what starts it,
+    // so that the thing showing the exact command is the thing running it.
+    const run = server.approved ? pluginsOpen : pluginsApprove;
+    void run(id)
       .then((next) => {
         setView(next);
         setOpenId(id);
@@ -118,9 +123,10 @@ export function PluginsPanel({ onClose }: { onClose: () => void }) {
 
         <p
           className="shrink-0 truncate border-b border-line/60 px-4 py-2 font-mono text-[10px] text-ink-faint"
-          title={view?.path}
+          title={`commands: ${view?.path ?? "…"}\napproved: ${view?.trustPath ?? "…"}`}
         >
           {view?.path ?? "reading…"}
+          {view ? " · approvals beside it" : ""}
         </p>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -175,20 +181,49 @@ export function PluginsPanel({ onClose }: { onClose: () => void }) {
                 <button
                   type="button"
                   disabled={!server.enabled || busy !== null}
-                  onClick={() => start(server.id)}
+                  onClick={() => start(server)}
                   className="ml-auto shrink-0 rounded border border-line px-2 py-0.5 text-[10px] text-ink-muted transition-colors hover:border-line-strong hover:text-ink disabled:pointer-events-none disabled:opacity-35"
                 >
                   {busy === server.id
-                    ? "starting…"
-                    : server.state === "running"
-                      ? "open"
-                      : "start"}
+                    ? server.approved
+                      ? "starting…"
+                      : "running it…"
+                    : !server.approved
+                      ? "run it"
+                      : server.state === "running"
+                        ? "open"
+                        : "start"}
                 </button>
               </div>
 
-              <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint">
+              {/*
+                The command is shown whole. SEP-1024 asks a client that runs a
+                local server to show the exact command without truncation, and a
+                command clipped by CSS is exactly the case it is about.
+              */}
+              <p className="mt-0.5 font-mono text-[10px] break-all whitespace-pre-wrap text-ink-faint">
                 {server.command} {server.args.join(" ")}
               </p>
+
+              {server.approvalNote ? (
+                <p className="mt-1 rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[10px] text-warn">
+                  {server.approved ? "" : "not approved yet: "}
+                  {server.approvalNote}
+                </p>
+              ) : null}
+
+              {server.toolChangeNote ? (
+                <p className="mt-1 flex items-baseline gap-2 rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[10px] text-warn">
+                  <span>the tool list moved: {server.toolChangeNote}</span>
+                  <button
+                    type="button"
+                    onClick={() => start(server)}
+                    className="ml-auto shrink-0 rounded border border-warn/60 px-1.5 py-0.5 transition-colors hover:bg-warn/20"
+                  >
+                    accept it
+                  </button>
+                </p>
+              ) : null}
 
               {server.problem ? (
                 <p className="mt-1 rounded border border-danger/40 bg-danger/10 px-2 py-1 text-[10px] text-danger">

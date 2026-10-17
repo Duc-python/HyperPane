@@ -27,8 +27,10 @@
 //! app that started it.
 
 pub mod host;
+pub mod trust;
 
 pub use host::{Host, Plugin, PluginError, PluginFile, PluginView, ToolView, EMPTY_FILE};
+pub use trust::{Approval, ToolChange, ToolSignature, Trust, TrustError, Verdict, EMPTY_TRUST};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};

@@ -101,7 +101,19 @@ green (tests, clippy, typecheck, and the app actually running).
       failure is remembered as a reason rather than retried as a wait. The panel
       takes JSON arguments and shows the tool's own schema: a form can come later,
       once a schema is worth rendering.
-- [ ] Plugin SDK + signed manifest.
+- [x] Consent and change visibility, which is what a client can actually do: a
+      command nobody has read does not run (shown in full, never truncated, with
+      an explicit "run it"), and `trust.json` records the command, its arguments,
+      the environment variable *names*, and every tool's name, description and
+      schema. A changed argument, command, environment variable or tool
+      description is named on screen and has to be accepted again.
+- [ ] Signatures and attestations are deliberately not invented here. The
+      specification is explicit that they say who you are trusting, not that the
+      trust is warranted; verifying them belongs to Sigstore and to registry
+      tooling, and an invented format would have nothing to interoperate with.
+      Worth doing when the app imports servers from somewhere else - a link, a
+      registry, a shared config - which is also when SEP-1024's consent flow stops
+      being satisfied by reading your own file.
 - [ ] A frontend test harness. The activity log is what stands in for one today,
       and the pane-session bug was found by reading it — which is a poor
       substitute for a test that fails.

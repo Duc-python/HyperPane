@@ -260,12 +260,20 @@ export interface PluginView {
   protocolVersion: string | null;
   /** The last thing the server said on its own error stream. */
   lastWords: string[];
+  /** Whether this command has been read and approved as it stands. */
+  approved: boolean;
+  /** Why it needs approving: never approved, or changed since. */
+  approvalNote: string | null;
+  /** How the tools differ from the ones approved, when they do. */
+  toolChangeNote: string | null;
   tools: PluginToolView[];
 }
 
 export interface PluginsView {
   /** Where the file is, so it can be edited or opened. */
   path: string;
+  /** Where the record of what was approved lives. */
+  trustPath: string;
   /** Problems with the file itself, which serde cannot see. */
   problems: string[];
   servers: PluginView[];
@@ -287,8 +295,17 @@ export const pluginsList = () => invoke<PluginsView>("plugins_list");
 /** Read the file again. This is what clears a remembered failure. */
 export const pluginsReload = () => invoke<PluginsView>("plugins_reload");
 
-/** Start a plugin and see what it offers. */
+/** Start a plugin and see what it offers. Refused unless it is approved. */
 export const pluginsOpen = (id: string) => invoke<PluginsView>("plugins_open", { id });
+
+/**
+ * Read a command and say yes to it, which starts it.
+ *
+ * Approving and starting are one action: the thing that shows the exact command
+ * is the thing that runs it, so nothing is ever approved and left unrun.
+ */
+export const pluginsApprove = (id: string) =>
+  invoke<PluginsView>("plugins_approve", { id });
 
 /**
  * Call one tool.

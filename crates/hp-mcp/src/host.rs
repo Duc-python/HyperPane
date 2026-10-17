@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::trust::{Approval, ToolChange, Trust};
 use crate::{Called, McpError, Options, Peer, Server, ServerSpec, Tool};
 
 /// One server as a person wrote it down.
@@ -76,6 +77,8 @@ pub enum PluginError {
     Unknown(String),
     #[error("plugin {0} is switched off in the plugin file")]
     Disabled(String),
+    #[error("plugin {id} has not been approved: {why}")]
+    Unapproved { id: String, why: String },
     #[error("plugin {id} did not start: {problem}")]
     Broken { id: String, problem: String },
     #[error(transparent)]
@@ -103,6 +106,12 @@ pub struct PluginView {
     /// The last thing the server said on its own error stream. This is where a
     /// server explains itself, so it is kept beside whatever went wrong.
     pub last_words: Vec<String>,
+    /// Whether this declaration has been read and approved as it stands.
+    pub approved: bool,
+    /// Why it needs approving, when it does: never approved, or changed since.
+    pub approval_note: Option<String>,
+    /// How the tools differ from the ones approved, when they do.
+    pub tool_change_note: Option<String>,
     pub tools: Vec<ToolView>,
 }
 
@@ -227,16 +236,69 @@ impl Host {
         &self.problems
     }
 
-    pub fn views(&self) -> Vec<PluginView> {
+    pub fn views(&self, trust: &Trust) -> Vec<PluginView> {
         self.plugins
             .iter()
-            .map(|plugin| self.view(plugin))
+            .map(|plugin| self.view(plugin, trust))
             .collect()
     }
 
+    /// What the file states about a plugin, in the shape an approval takes.
+    pub fn declaration(&self, id: &str) -> Result<Approval, PluginError> {
+        let plugin = self.plugin(id)?;
+        Ok(Approval::of(&plugin.command, &plugin.args, &plugin.env))
+    }
+
     /// Start a plugin if it is not running, and say what it offers.
-    pub fn open(&mut self, id: &str) -> Result<PluginView, PluginError> {
+    ///
+    /// A declaration nobody has read does not start. That is the consent step
+    /// the specification requires of a client that runs a local server, and it
+    /// is why the panel shows the exact command before offering the button.
+    pub fn open(&mut self, id: &str, trust: &Trust) -> Result<PluginView, PluginError> {
+        // Switched off is about the file and is the more useful thing to say
+        // first; approval is about the person.
         let plugin = self.plugin(id)?.clone();
+        if !plugin.enabled {
+            return Err(PluginError::Disabled(id.to_string()));
+        }
+
+        let declaration = self.declaration(id)?;
+        let verdict = trust.verdict(id, &declaration);
+        if !verdict.is_approved() {
+            return Err(PluginError::Unapproved {
+                id: id.to_string(),
+                why: verdict
+                    .message()
+                    .unwrap_or_else(|| "it has not been approved".to_string()),
+            });
+        }
+
+        self.run(&plugin)?;
+        Ok(self.view(&plugin, trust))
+    }
+
+    /// Start a plugin the person has just read and approved.
+    ///
+    /// Approving and starting are one action on purpose: the thing that shows
+    /// the command is the thing that runs it. What the server offers is handed
+    /// back so the caller can record it beside the declaration, which is what
+    /// makes a later rewrite of a tool visible.
+    pub fn start_approved(&mut self, id: &str) -> Result<(PluginView, Vec<Tool>), PluginError> {
+        let plugin = self.plugin(id)?.clone();
+        self.run(&plugin)?;
+
+        let tools = self
+            .entries
+            .get(id)
+            .map(|entry| entry.tools.clone())
+            .unwrap_or_default();
+        Ok((self.view(&plugin, &Trust::default()), tools))
+    }
+
+    /// Run it, whatever anyone has approved: the entry points above have
+    /// already decided whether that is allowed.
+    fn run(&mut self, plugin: &Plugin) -> Result<(), PluginError> {
+        let id = plugin.id.as_str();
         if !plugin.enabled {
             return Err(PluginError::Disabled(id.to_string()));
         }
@@ -253,9 +315,10 @@ impl Host {
             .get(id)
             .is_none_or(|entry| entry.server.is_none())
         {
-            match self.start(&plugin) {
+            match self.start(plugin) {
                 Ok(entry) => {
                     self.entries.insert(id.to_string(), entry);
+                    Ok(())
                 }
                 Err(error) => {
                     // Remembered rather than retried: see the note at the top of
@@ -275,20 +338,26 @@ impl Host {
                             ..Entry::default()
                         },
                     );
-                    return Err(PluginError::Broken {
+                    Err(PluginError::Broken {
                         id: id.to_string(),
                         problem,
-                    });
+                    })
                 }
             }
+        } else {
+            Ok(())
         }
-
-        Ok(self.view(&plugin))
     }
 
     /// Call one tool, starting the plugin first if it is not running.
-    pub fn call(&mut self, id: &str, tool: &str, arguments: Value) -> Result<Called, PluginError> {
-        self.open(id)?;
+    pub fn call(
+        &mut self,
+        id: &str,
+        tool: &str,
+        arguments: Value,
+        trust: &Trust,
+    ) -> Result<Called, PluginError> {
+        self.open(id, trust)?;
 
         let (outcome, last_words) = {
             let entry = self
@@ -392,9 +461,18 @@ impl Host {
         })
     }
 
-    fn view(&self, plugin: &Plugin) -> PluginView {
+    fn view(&self, plugin: &Plugin, trust: &Trust) -> PluginView {
         let entry = self.entries.get(&plugin.id);
         let running = entry.is_some_and(|entry| entry.server.is_some());
+
+        let declaration = Approval::of(&plugin.command, &plugin.args, &plugin.env);
+        let verdict = trust.verdict(&plugin.id, &declaration);
+        // Only a server that has run can have described its tools, so an entry
+        // that has never started has nothing to compare.
+        let tool_change = entry
+            .filter(|entry| entry.server.is_some())
+            .map(|entry| trust.tool_change(&plugin.id, &entry.tools))
+            .unwrap_or(ToolChange::Unknown);
 
         PluginView {
             id: plugin.id.clone(),
@@ -407,6 +485,9 @@ impl Host {
                 (false, Some(_)) => "broken",
                 (false, None) => "declared",
             },
+            approved: verdict.is_approved(),
+            approval_note: verdict.message(),
+            tool_change_note: tool_change.message(),
             problem: entry.and_then(|entry| entry.problem.clone()),
             peer: entry
                 .and_then(|entry| entry.peer.as_ref())
@@ -453,7 +534,7 @@ mod tests {
         })
         .expect("the shipped file parses");
 
-        assert!(host.views().is_empty());
+        assert!(host.views(&Trust::default()).is_empty());
         assert!(host.problems().is_empty());
     }
 
@@ -484,8 +565,8 @@ mod tests {
         let host = Host::load(file, |command, args| (command.to_string(), args.to_vec()))
             .expect("it parses");
 
-        assert_eq!(host.views().len(), 1);
-        assert_eq!(host.views()[0].command, "first");
+        assert_eq!(host.views(&Trust::default()).len(), 1);
+        assert_eq!(host.views(&Trust::default())[0].command, "first");
         assert!(
             host.problems()
                 .iter()
@@ -522,8 +603,11 @@ mod tests {
         .expect("it parses");
 
         // The view shows what the person wrote, not what the resolver made of it.
-        assert_eq!(host.views()[0].command, "npx");
-        assert_eq!(host.views()[0].args, ["-y", "server-weather"]);
+        assert_eq!(host.views(&Trust::default())[0].command, "npx");
+        assert_eq!(
+            host.views(&Trust::default())[0].args,
+            ["-y", "server-weather"]
+        );
     }
 
     #[test]
@@ -532,8 +616,8 @@ mod tests {
         let host = Host::load(file, |command, args| (command.to_string(), args.to_vec()))
             .expect("it parses");
 
-        assert_eq!(host.views()[0].state, "declared");
-        assert!(host.views()[0].tools.is_empty());
+        assert_eq!(host.views(&Trust::default())[0].state, "declared");
+        assert!(host.views(&Trust::default())[0].tools.is_empty());
     }
 
     #[test]
@@ -543,7 +627,7 @@ mod tests {
         })
         .expect("it parses");
 
-        match host.open("weather") {
+        match host.open("weather", &Trust::default()) {
             Err(PluginError::Unknown(id)) => assert_eq!(id, "weather"),
             other => panic!("expected an unknown plugin, got {other:?}"),
         }

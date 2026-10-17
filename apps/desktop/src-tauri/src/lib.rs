@@ -151,32 +151,56 @@ struct AppState {
     /// rather than at launch, so a plugin file that is wrong cannot stop the app
     /// from starting.
     plugins_path: PathBuf,
+    /// Where the record of what has been approved lives.
+    trust_path: PathBuf,
     plugins: Arc<Mutex<Option<hp_mcp::Host>>>,
+}
+
+/// Where the app keeps the files it owns.
+///
+/// Grouped because they all come from one directory, and a constructor taking
+/// five paths one after another is a guessing game at every call site.
+struct Paths {
+    integration: PathBuf,
+    worktrees: PathBuf,
+    findings: PathBuf,
+    plugins: PathBuf,
+    trust: PathBuf,
+}
+
+impl Paths {
+    fn in_data_dir(directory: &Path) -> Self {
+        Self {
+            integration: directory.join("integration"),
+            worktrees: directory.join("worktrees"),
+            findings: directory.join("findings"),
+            plugins: directory.join("plugins.json"),
+            trust: directory.join("trust.json"),
+        }
+    }
 }
 
 impl AppState {
     fn new(
         store: SessionStore,
-        integration_dir: PathBuf,
-        worktree_dir: PathBuf,
-        findings_dir: PathBuf,
-        plugins_path: PathBuf,
+        paths: Paths,
         audit: AuditLog,
         workspace: Option<Workspace>,
     ) -> Self {
         Self {
             panes: Arc::new(PaneManager::new()),
             store,
-            integration_dir,
-            worktree_dir,
-            findings_dir,
+            integration_dir: paths.integration,
+            worktree_dir: paths.worktrees,
+            findings_dir: paths.findings,
             runs: Arc::new(Mutex::new(HashMap::new())),
             directories: Arc::new(Mutex::new(HashMap::new())),
             guard: Mutex::new(SpawnGuard::new(Limits::default())),
             audit,
             team: Mutex::new(None),
             workspace: Mutex::new(workspace),
-            plugins_path,
+            plugins_path: paths.plugins,
+            trust_path: paths.trust,
             plugins: Arc::new(Mutex::new(None)),
         }
     }
@@ -1280,10 +1304,37 @@ struct PluginsView {
     /// Where the file is, so the UI can say what to edit rather than only that
     /// something is wrong.
     path: String,
+    /// Where the record of what was approved lives. It is a plain file too, so
+    /// an approval can be read and, if it comes to that, taken back by hand.
+    trust_path: String,
     /// Problems with the file itself, which are not the same as a server that
     /// will not start.
     problems: Vec<String>,
     servers: Vec<hp_mcp::PluginView>,
+}
+
+/// The record of what has been approved, read fresh each time.
+///
+/// It is a small file and it is the thing that decides whether a command runs,
+/// so reading it when it is needed is better than holding an old copy in memory
+/// and having to remember to invalidate it.
+fn load_trust(path: &Path) -> Result<hp_mcp::Trust, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, hp_mcp::EMPTY_TRUST)
+                .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+            hp_mcp::EMPTY_TRUST.to_string()
+        }
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+    };
+
+    hp_mcp::Trust::parse(&text).map_err(|error| error.to_string())
+}
+
+fn save_trust(path: &Path, trust: &hp_mcp::Trust) -> Result<(), String> {
+    std::fs::write(path, trust.to_json())
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
 }
 
 /// The plugin file's text, reading an empty one into place the first time so
@@ -1322,11 +1373,17 @@ fn with_plugins<T>(
     Ok(work(host))
 }
 
-fn plugins_view(path: &Path, host: &hp_mcp::Host) -> PluginsView {
+fn plugins_view(
+    path: &Path,
+    trust_path: &Path,
+    trust: &hp_mcp::Trust,
+    host: &hp_mcp::Host,
+) -> PluginsView {
     PluginsView {
         path: path.display().to_string(),
+        trust_path: trust_path.display().to_string(),
         problems: host.problems().to_vec(),
-        servers: host.views(),
+        servers: host.views(trust),
     }
 }
 
@@ -1355,8 +1412,9 @@ fn describe_call(called: &hp_mcp::Called) -> String {
 /// What the plugin file declares, and what each plugin is doing.
 #[tauri::command]
 fn plugins_list(state: State<'_, AppState>) -> Result<PluginsView, String> {
+    let trust = load_trust(&state.trust_path)?;
     with_plugins(&state.plugins, &state.plugins_path, |host| {
-        plugins_view(&state.plugins_path, host)
+        plugins_view(&state.plugins_path, &state.trust_path, &trust, host)
     })
 }
 
@@ -1364,16 +1422,23 @@ fn plugins_list(state: State<'_, AppState>) -> Result<PluginsView, String> {
 ///
 /// This is what clears a remembered failure: the reason it is remembered at all
 /// is that retrying costs a startup wait, and a person editing the file is the
-/// thing that changes the answer.
+/// thing that changes the answer. An approval is not cleared - it is about the
+/// declaration, and if the declaration moved, the verdict says what moved.
 #[tauri::command]
 fn plugins_reload(state: State<'_, AppState>) -> Result<PluginsView, String> {
+    let trust = load_trust(&state.trust_path)?;
     let mut guard = state.plugins.lock();
     if let Some(mut host) = guard.take() {
         host.shutdown();
     }
     *guard = Some(load_plugins(&state.plugins_path)?);
     let host = guard.as_ref().expect("just loaded");
-    Ok(plugins_view(&state.plugins_path, host))
+    Ok(plugins_view(
+        &state.plugins_path,
+        &state.trust_path,
+        &trust,
+        host,
+    ))
 }
 
 /// Start a plugin and say what it offers.
@@ -1385,25 +1450,84 @@ fn plugins_reload(state: State<'_, AppState>) -> Result<PluginsView, String> {
 async fn plugins_open(id: String, state: State<'_, AppState>) -> Result<PluginsView, String> {
     let plugins = Arc::clone(&state.plugins);
     let path = state.plugins_path.clone();
+    let trust_path = state.trust_path.clone();
     let audit = state.audit.path().to_path_buf();
 
     tauri::async_runtime::spawn_blocking(move || -> Result<PluginsView, String> {
         let log = AuditLog::new(&audit);
+        let trust = load_trust(&trust_path)?;
         let opened = with_plugins(&plugins, &path, |host| {
-            host.open(&id).map_err(|error| error.to_string())
+            host.open(&id, &trust).map_err(|error| error.to_string())
         })?;
 
         match opened {
             Ok(view) => {
                 let said = view.peer.clone().unwrap_or_else(|| view.command.clone());
                 let _ = log.append(&AuditEntry::new("plugin.open", format!("{id}: {said}")));
-                with_plugins(&plugins, &path, |host| plugins_view(&path, host))
+                with_plugins(&plugins, &path, |host| {
+                    plugins_view(&path, &trust_path, &trust, host)
+                })
             }
             Err(error) => {
                 let _ = log.append(&AuditEntry::new("plugin.refused", format!("{id}: {error}")));
                 Err(error)
             }
         }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Read a command and say yes to it, which starts it.
+///
+/// Approving and starting are one action on purpose: what shows the exact
+/// command is what runs it, so there is no state in which something has been
+/// approved and not yet run. The tools the server offers are recorded with the
+/// approval, which is what makes a later rewrite of one of them visible.
+#[tauri::command]
+async fn plugins_approve(id: String, state: State<'_, AppState>) -> Result<PluginsView, String> {
+    let plugins = Arc::clone(&state.plugins);
+    let path = state.plugins_path.clone();
+    let trust_path = state.trust_path.clone();
+    let audit = state.audit.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<PluginsView, String> {
+        let log = AuditLog::new(&audit);
+        let trust = load_trust(&trust_path)?;
+
+        let started = with_plugins(&plugins, &path, |host| {
+            host.start_approved(&id).map_err(|error| error.to_string())
+        })?;
+
+        let (_view, tools) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                let _ = log.append(&AuditEntry::new(
+                    "plugin.refused",
+                    format!("{id}: approving and starting it failed: {error}"),
+                ));
+                return Err(error);
+            }
+        };
+
+        let declaration = with_plugins(&plugins, &path, |host| {
+            host.declaration(&id).map_err(|error| error.to_string())
+        })??;
+        let next = trust.approve(&id, &declaration, &tools);
+        save_trust(&trust_path, &next)?;
+
+        let _ = log.append(&AuditEntry::new(
+            "plugin.approve",
+            format!(
+                "{id}: {} with {} tool(s) recorded",
+                declaration.command,
+                tools.len()
+            ),
+        ));
+
+        with_plugins(&plugins, &path, |host| {
+            plugins_view(&path, &trust_path, &next, host)
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1423,12 +1547,14 @@ async fn plugins_call(
 ) -> Result<hp_mcp::Called, String> {
     let plugins = Arc::clone(&state.plugins);
     let path = state.plugins_path.clone();
+    let trust_path = state.trust_path.clone();
     let audit = state.audit.path().to_path_buf();
 
     tauri::async_runtime::spawn_blocking(move || -> Result<hp_mcp::Called, String> {
         let log = AuditLog::new(&audit);
+        let trust = load_trust(&trust_path)?;
         let called = with_plugins(&plugins, &path, |host| {
-            host.call(&id, &tool, arguments)
+            host.call(&id, &tool, arguments, &trust)
                 .map_err(|error| error.to_string())
         })?;
 
@@ -1500,10 +1626,7 @@ pub fn run() {
 
             app.manage(AppState::new(
                 store,
-                directory.join("integration"),
-                directory.join("worktrees"),
-                directory.join("findings"),
-                directory.join("plugins.json"),
+                Paths::in_data_dir(&directory),
                 AuditLog::new(directory.join("audit.log")),
                 session.workspace,
             ));
@@ -1532,6 +1655,7 @@ pub fn run() {
             plugins_list,
             plugins_reload,
             plugins_open,
+            plugins_approve,
             plugins_call,
             teams_list,
             team_plan,
