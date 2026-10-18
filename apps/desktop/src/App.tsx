@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import {
   agentsAvailable,
@@ -14,6 +13,8 @@ import {
   paneCwd,
   paneIds,
   paneList,
+  roomFollow,
+  roomState,
   sessionLoad,
   sessionPath,
   sessionSave,
@@ -33,6 +34,7 @@ import {
   type AppInfo,
   type Localised,
   type Profile,
+  type RoomView,
   type Session,
   type SplitDirection,
   type StartedMember,
@@ -43,14 +45,20 @@ import {
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
 import { shortenPath } from "./lib/paths";
 import { describeResult, openPaneAgent, type PaneAgent } from "./lib/agents";
+import { displayPaneTitle, paneRows, type PaneLive } from "./lib/panes";
+import { sameRoomView } from "./lib/room";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
 import { CommandPalette } from "./components/CommandPalette";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { PluginsPanel } from "./components/PluginsPanel";
-import { RoomPanel } from "./components/RoomPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { TopBar } from "./components/TopBar";
+import { Sidebar } from "./components/Sidebar";
+import { ControlRoom } from "./components/ControlRoom";
 import { TeamPlanPanel } from "./components/TeamPlanPanel";
 import { TeamRunPanel } from "./components/TeamRunPanel";
+import { Hint } from "./components/Chrome";
 import type { PaneController } from "./components/TerminalPane";
 
 /** Must match `hp_core::SESSION_VERSION`. */
@@ -80,12 +88,35 @@ export default function App() {
   const [defaultProfile, setDefaultProfile] = useState<string | null>(null);
   const [paneProfiles, setPaneProfiles] = useState<Record<string, string>>({});
   const [paneAgents, setPaneAgents] = useState<Record<string, PaneAgent>>({});
+  /**
+   * What each pane's view last reported.
+   *
+   * The rail and the tab strip describe the same panes the grid draws, and the
+   * grid is the only thing that knows what a pane's shell said. This is that
+   * answer, lifted rather than asked for twice.
+   */
+  const [paneLive, setPaneLive] = useState<Record<string, PaneLive>>({});
+  /**
+   * The room, as the app last saw it.
+   *
+   * Polled here rather than inside the dock: the top bar chip and the rail show
+   * the room whether or not the dock is on screen, and three pollers would be
+   * three answers to one question.
+   */
+  const [room, setRoom] = useState<RoomView | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** Set while the profile editor is on screen. */
   const [profilesOpen, setProfilesOpen] = useState(false);
   /** Set while the plugin panel is on screen. */
   const [pluginsOpen, setPluginsOpen] = useState(false);
-  /** Set while the room panel is on screen. */
+  /** Set while the settings panel is on screen. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Whether the left rail is on screen. */
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  /**
+   * Whether the control room dock is on screen. Closed by default: a column
+   * that says "not in a room" all day is space taken from the terminal.
+   */
   const [roomOpen, setRoomOpen] = useState(false);
   /**
    * Set while the palette is asking for a task. The worktree flag is decided
@@ -189,6 +220,29 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [workspace, profiles, defaultProfile]);
 
+  // The room changes without this instance asking: someone joins, types, or the
+  // transcript grows. One second is faster than a person reads and slower than
+  // a poll that costs anything. An unchanged answer is dropped here so the
+  // whole shell is not redrawn once a second for nothing.
+  useEffect(() => {
+    let cancelled = false;
+    const read = () => {
+      void roomState()
+        .then((next) => {
+          if (!cancelled) {
+            setRoom((previous) => (sameRoomView(previous, next) ? previous : next));
+          }
+        })
+        .catch(() => undefined);
+    };
+    read();
+    const timer = window.setInterval(read, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const splitWith = useCallback(
     async (direction: SplitDirection, profileId: string | null) => {
       const current = workspaceRef.current;
@@ -218,6 +272,11 @@ export default function App() {
       return remaining;
     });
     setPaneAgents((map) => {
+      const remaining = { ...map };
+      delete remaining[id];
+      return remaining;
+    });
+    setPaneLive((map) => {
       const remaining = { ...map };
       delete remaining[id];
       return remaining;
@@ -385,6 +444,33 @@ export default function App() {
     [],
   );
 
+  /**
+   * Take a pane's report of itself.
+   *
+   * Identical reports are dropped rather than stored: a pane that polls its own
+   * run state once a second would otherwise redraw the entire shell once a
+   * second to say the same thing.
+   */
+  const onLive = useCallback((id: string, live: PaneLive | null) => {
+    setPaneLive((map) => {
+      if (live === null) {
+        if (!(id in map)) return map;
+        const remaining = { ...map };
+        delete remaining[id];
+        return remaining;
+      }
+      const previous = map[id];
+      if (
+        previous &&
+        previous.snapshot === live.snapshot &&
+        previous.phase === live.phase
+      ) {
+        return map;
+      }
+      return { ...map, [id]: live };
+    });
+  }, []);
+
   const withFocusedPane = useCallback(
     (action: (controller: PaneController) => void) => {
       const focused = workspaceRef.current?.focused;
@@ -468,11 +554,25 @@ export default function App() {
         run: () => setPluginsOpen(true),
       },
       {
-        id: "app.room",
-        title: "Room…",
+        id: "app.settings",
+        title: "Settings…",
         group: "App",
         hint: null,
-        run: () => setRoomOpen(true),
+        run: () => setSettingsOpen(true),
+      },
+      {
+        id: "view.controlRoom",
+        title: "Toggle the control room",
+        group: "View",
+        hint: null,
+        run: () => setRoomOpen((open) => !open),
+      },
+      {
+        id: "view.sidebar",
+        title: "Toggle the sidebar",
+        group: "View",
+        hint: null,
+        run: () => setSidebarOpen((open) => !open),
       },
       {
         id: "pane.splitRight",
@@ -614,7 +714,33 @@ export default function App() {
     }
   }, []);
 
-  const paneCount = workspace ? paneIds(workspace.layout).length : 0;
+  /** Follow, or stop following, whoever the rail was clicked on. */
+  const follow = useCallback((who: string | null) => {
+    void roomFollow(who)
+      .then((next) => setRoom(next))
+      .catch((cause: unknown) => setError(String(cause)));
+  }, []);
+
+  /** What to call a pane, for the rail, the tabs and the control room. */
+  const labelFor = useCallback(
+    (id: string) => {
+      const fallback = paneAgents[id]?.label ?? profileFor(id)?.name ?? "shell";
+      return displayPaneTitle(paneLive[id]?.snapshot.title ?? "", fallback);
+    },
+    [paneAgents, paneLive, profileFor],
+  );
+
+  const rows = useMemo(() => {
+    const ids = workspace ? paneIds(workspace.layout) : [];
+    return paneRows({
+      ids,
+      live: paneLive,
+      focused: workspace?.focused ?? null,
+      fallback: labelFor,
+    });
+  }, [workspace, paneLive, labelFor]);
+
+  const paneCount = rows.length;
   const canClose = paneCount > 1;
   const holdingClaims =
     teamRun?.claims.filter((claim) => claim.wave === teamRun.wave) ?? [];
@@ -623,99 +749,27 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-full w-full flex-col bg-base">
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line/70 bg-surface/50 px-3 backdrop-blur">
-        <div className="flex items-center gap-2">
-          <span
-            aria-hidden
-            className="size-2 rounded-[3px] bg-accent shadow-[0_0_12px_-2px_var(--color-accent)]"
-          />
-          <span className="text-[13px] font-semibold tracking-tight text-ink">
-            HyperPane
-          </span>
-          {info ? (
-            <span className="text-[10px] text-ink-faint">v{info.version}</span>
-          ) : null}
-        </div>
-
-        <div className="h-4 w-px bg-line" aria-hidden />
-
-        <div className="flex items-center gap-1">
-          <ToolButton
-            label="Split right"
-            shortcut={formatChord("mod+shift+e")}
-            onClick={() => void splitWith("row", null)}
-            disabled={!workspace}
-          >
-            <rect x="1.2" y="1.8" width="10.6" height="8.4" rx="1.6" />
-            <path d="M6.5 1.8v8.4" />
-          </ToolButton>
-          <ToolButton
-            label="Split down"
-            shortcut={formatChord("mod+shift+o")}
-            onClick={() => void splitWith("column", null)}
-            disabled={!workspace}
-          >
-            <rect x="1.2" y="1.8" width="10.6" height="8.4" rx="1.6" />
-            <path d="M1.2 6h10.6" />
-          </ToolButton>
-          <ToolButton
-            label="Close pane"
-            shortcut={formatChord("mod+shift+w")}
-            onClick={() => {
-              const focused = workspace?.focused;
-              if (focused) void closePane(focused);
-            }}
-            disabled={!canClose}
-          >
-            <path d="M3.4 3.4l6.2 6.2M9.6 3.4l-6.2 6.2" />
-          </ToolButton>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setPaletteOpen(true)}
-          className="flex items-center gap-2 rounded-md border border-line bg-raised/60 px-2.5 py-1 text-[11px] text-ink-muted transition-colors hover:border-line-strong hover:text-ink"
-        >
-          <span>Commands</span>
-          <kbd className="rounded border border-line bg-surface px-1.5 py-px text-[9px]">
-            {formatChord("mod+shift+p")}
-          </kbd>
-        </button>
-
-        <div className="ml-auto flex items-center gap-3 text-[10px] text-ink-faint">
-          {teamRun ? (
-            <button
-              type="button"
-              onClick={() => setShowRun(true)}
-              title={`${
-                teamRun.holdingMessage ??
-                `${teamRun.wavesRemaining} wave(s) after this one`
-              } — open the run view`}
-              className="-mx-1 rounded px-1 py-0.5 transition-colors hover:bg-overlay hover:text-ink"
-            >
-              team {teamRun.title} · wave {teamRun.wave}
-              {teamRun.running > 0 ? ` · ${teamRun.running} running` : ""}
-            </button>
-          ) : null}
-          {activeProfile ? (
-            <button
-              type="button"
-              onClick={() => setProfilesOpen(true)}
-              title={`${activeProfile.shell ?? "platform default shell"} — click to edit profiles`}
-              className="rounded px-1 py-0.5 transition-colors hover:bg-overlay hover:text-ink"
-            >
-              {activeProfile.name}
-            </button>
-          ) : null}
-          {workspace ? (
-            <span>
-              {paneCount} pane{paneCount === 1 ? "" : "s"}
-            </span>
-          ) : null}
-          {info ? <span className="uppercase">{info.platform}</span> : null}
-        </div>
-      </header>
+    <div className="flex h-full w-full flex-col bg-canvas">
+      <TopBar
+        workspace={workspace}
+        panes={rows}
+        info={info}
+        profileName={activeProfile?.name ?? null}
+        canClose={canClose}
+        teamRun={teamRun}
+        room={room}
+        roomOpen={roomOpen}
+        onFocusPane={focus}
+        onClosePane={(id) => void closePane(id)}
+        onSplit={(direction) => void splitWith(direction, null)}
+        onCloseFocused={() => {
+          if (workspace?.focused) void closePane(workspace.focused);
+        }}
+        onOpenProfiles={() => setProfilesOpen(true)}
+        onOpenRun={() => setShowRun(true)}
+        onToggleRoom={() => setRoomOpen((open) => !open)}
+        onOpenPalette={() => setPaletteOpen(true)}
+      />
 
       {error ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-danger/40 bg-danger/10 px-3 py-1.5 text-[11px] text-danger">
@@ -784,51 +838,113 @@ export default function App() {
         </div>
       ) : null}
 
-      <main className="min-h-0 flex-1 p-1.5">
-        {workspace ? (
-          <LayoutView
-            node={workspace.layout}
-            path={[]}
-            focused={workspace.focused}
+      {/*
+        A column that appears and disappears stays in the same child slot, so
+        the grid in the middle is never unmounted by a toggle. Unmounting it
+        would take every terminal with it and open the shells again.
+      */}
+      <div className="flex min-h-0 flex-1">
+        {sidebarOpen ? (
+          <Sidebar
+            workspace={workspace}
+            panes={rows}
             canClose={canClose}
-            profileFor={profileFor}
-            agentFor={agentFor}
-            formatPath={formatPath}
-            onReady={onReady}
-            onFocus={focus}
-            onClose={(id) => void closePane(id)}
-            onRatioCommit={(path, ratio) => void commitRatio(path, ratio)}
+            room={room}
+            paneLabel={labelFor}
+            onFocusPane={focus}
+            onClosePane={(id) => void closePane(id)}
+            onSplit={(direction) => void splitWith(direction, null)}
+            onFollow={follow}
+            onOpenRoom={() => setRoomOpen(true)}
+            onOpenProfiles={() => setProfilesOpen(true)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onHide={() => setSidebarOpen(false)}
           />
-        ) : (
-          <div className="grid h-full place-items-center text-[12px] text-ink-faint">
-            opening a shell…
-          </div>
-        )}
-      </main>
+        ) : null}
 
-      <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-line/70 bg-surface/40 px-3 text-[10px] text-ink-faint">
-        <Hint chord="mod+shift+p" action="commands" />
-        <Hint chord="mod+shift+e" action="split right" />
-        <Hint chord="mod+shift+o" action="split down" />
-        <Hint chord="mod+shift+w" action="close pane" />
-        <Hint chord="mod+tab" action="next pane" />
-        <Hint chord="mod+shift+up" action="previous prompt" />
-        <Hint chord="mod+shift+down" action="next prompt" />
-        {sessionFile ? (
-          <span
-            className="ml-auto truncate"
-            title={[
-              `Layout and profiles: ${sessionFile}`,
-              auditFile ? `Activity log: ${auditFile}` : null,
-            ]
-              .filter(Boolean)
-              .join("\n")}
-          >
-            session saved
-          </span>
-        ) : (
-          <span className="ml-auto">local-first · no account · no server</span>
-        )}
+        <main className="min-h-0 min-w-0 flex-1 p-1">
+          {workspace ? (
+            <LayoutView
+              node={workspace.layout}
+              path={[]}
+              focused={workspace.focused}
+              canClose={canClose}
+              profileFor={profileFor}
+              agentFor={agentFor}
+              formatPath={formatPath}
+              onReady={onReady}
+              onLive={onLive}
+              onFocus={focus}
+              onClose={(id) => void closePane(id)}
+              onRatioCommit={(path, ratio) => void commitRatio(path, ratio)}
+            />
+          ) : (
+            <div className="grid h-full place-items-center text-[12px] text-ink-faint">
+              opening a shell…
+            </div>
+          )}
+        </main>
+
+        {roomOpen ? (
+          <ControlRoom
+            view={room}
+            focusedPane={workspace?.focused ?? null}
+            paneLabel={labelFor}
+            onView={setRoom}
+            onHide={() => setRoomOpen(false)}
+          />
+        ) : null}
+      </div>
+
+      <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-line/60 bg-surface/40 px-3 text-[10px] text-ink-faint">
+        {/*
+          The hints give way before the toggles do: a window too narrow for both
+          drops the least urgent chords rather than pushing the status bar wider
+          than the window. Every chord is still in the palette.
+        */}
+        <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+          <Hint chord="mod+shift+p" action="commands" />
+          <Hint chord="mod+shift+e" action="split right" />
+          <Hint chord="mod+shift+w" action="close pane" />
+          <Hint chord="mod+tab" action="next pane" className="max-lg:hidden" />
+          <Hint
+            chord="mod+shift+up"
+            action="previous prompt"
+            className="max-xl:hidden"
+          />
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {info ? (
+            <span title={`This machine reports itself as ${info.platform}`}>
+              <span className="uppercase">{info.platform}</span>
+            </span>
+          ) : null}
+          <PanelToggle
+            label="sidebar"
+            open={sidebarOpen}
+            onClick={() => setSidebarOpen((open) => !open)}
+          />
+          <PanelToggle
+            label="control room"
+            open={roomOpen}
+            onClick={() => setRoomOpen((open) => !open)}
+          />
+          {sessionFile ? (
+            <span
+              className="max-w-64 truncate"
+              title={[
+                `Layout and profiles: ${sessionFile}`,
+                auditFile ? `Activity log: ${auditFile}` : null,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              session saved
+            </span>
+          ) : (
+            <span>local-first · no account · no server</span>
+          )}
+        </div>
       </footer>
 
       {teamKey ? (
@@ -851,10 +967,12 @@ export default function App() {
         <PluginsPanel onClose={() => setPluginsOpen(false)} />
       ) : null}
 
-      {roomOpen ? (
-        <RoomPanel
-          focusedPane={workspace?.focused ?? null}
-          onClose={() => setRoomOpen(false)}
+      {settingsOpen ? (
+        <SettingsPanel
+          info={info}
+          sessionFile={sessionFile}
+          auditFile={auditFile}
+          onClose={() => setSettingsOpen(false)}
         />
       ) : null}
 
@@ -892,52 +1010,36 @@ export default function App() {
   );
 }
 
-interface ToolButtonProps {
-  label: string;
-  shortcut: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}
-
-function ToolButton({
+/**
+ * The status bar's way back to a column that was hidden.
+ *
+ * A toggle rather than a one-way hide: a hidden rail whose only way back is the
+ * palette is a rail most people would not find again.
+ */
+function PanelToggle({
   label,
-  shortcut,
-  disabled,
+  open,
   onClick,
-  children,
-}: ToolButtonProps) {
+}: {
+  label: string;
+  open: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
-      title={`${label} (${shortcut})`}
-      aria-label={label}
-      disabled={disabled ?? false}
+      aria-pressed={open}
+      title={`${open ? "Hide" : "Show"} the ${label}`}
       onClick={onClick}
-      className="grid size-7 place-items-center rounded-md text-ink-muted transition-colors hover:bg-overlay hover:text-ink disabled:pointer-events-none disabled:opacity-35"
+      className={`flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:bg-overlay hover:text-ink ${
+        open ? "text-ink-muted" : "text-ink-faint"
+      }`}
     >
-      <svg
-        viewBox="0 0 13 12"
-        className="size-3.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
+      <span
         aria-hidden
-      >
-        {children}
-      </svg>
+        className={`size-1.5 rounded-full ${open ? "bg-accent" : "bg-line-strong"}`}
+      />
+      {label}
     </button>
-  );
-}
-
-function Hint({ chord, action }: { chord: string; action: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <kbd className="rounded border border-line bg-raised px-1.5 py-px text-[9px] text-ink-muted">
-        {formatChord(chord)}
-      </kbd>
-      <span>{action}</span>
-    </span>
   );
 }

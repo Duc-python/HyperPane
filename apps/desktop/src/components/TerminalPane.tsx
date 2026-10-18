@@ -6,8 +6,14 @@ import {
   openPaneRuntime,
   type PaneRuntime,
   type PaneSnapshot,
-  type PaneStatus,
 } from "../lib/paneRuntime";
+import {
+  displayPaneTitle,
+  paneTone,
+  TONE_LABEL,
+  type PaneLive,
+} from "../lib/panes";
+import { Chip, CloseButton, PaneGlyph } from "./Chrome";
 import {
   paneRunState,
   type PaneRunState,
@@ -41,23 +47,15 @@ interface TerminalPaneProps {
   formatPath: (path: string) => string;
   /** Publishes this pane's controller, or `null` when it goes away. */
   onReady: (id: string, controller: PaneController | null) => void;
+  /**
+   * Publishes what this pane is doing, for the rail and the tab strip, or
+   * `null` when the view goes away. The header draws the same state; this is
+   * what lets the shell outside the pane say it too.
+   */
+  onLive: (id: string, live: PaneLive | null) => void;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
 }
-
-const STATUS_DOT: Record<PaneStatus, string> = {
-  starting: "bg-warn",
-  live: "bg-ok",
-  exited: "bg-ink-faint",
-  failed: "bg-danger",
-};
-
-const STATUS_LABEL: Record<PaneStatus, string> = {
-  starting: "starting",
-  live: "live",
-  exited: "exited",
-  failed: "failed",
-};
 
 /**
  * What an agent pane is doing, from the app's own observation.
@@ -83,6 +81,7 @@ export function TerminalPane({
   agent,
   formatPath,
   onReady,
+  onLive,
   onFocus,
   onClose,
 }: TerminalPaneProps) {
@@ -94,6 +93,7 @@ export function TerminalPane({
     cwd: null,
     exitCode: null,
     durationMs: null,
+    running: false,
   });
   /** What an agent pane has reported about itself, when it runs one. */
   const [runState, setRunState] = useState<PaneRunState | null>(null);
@@ -103,6 +103,14 @@ export function TerminalPane({
   // than tracked.
   const openProfile = useRef(profile);
   const openAgent = useRef(agent);
+
+  // Held in a ref so that publishing a pane's state never re-runs the effect
+  // that owns the terminal: a new callback identity from the app would
+  // otherwise detach and re-attach a live shell.
+  const report = useRef(onLive);
+  useEffect(() => {
+    report.current = onLive;
+  }, [onLive]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -190,19 +198,28 @@ export function TerminalPane({
     };
   }, [id, agent]);
 
+  // Tell the shell what this pane is doing, and stop telling it once the view
+  // is gone. The rail and the tab strip read this rather than polling again:
+  // they are describing the same pane, not a second opinion about it.
+  const phase = runState?.phase ?? null;
+  useEffect(() => {
+    report.current(id, { snapshot: view, phase });
+  }, [id, view, phase]);
+
+  useEffect(() => {
+    return () => {
+      report.current(id, null);
+    };
+  }, [id]);
+
   // ConPTY reports the program path as the window title until the shell sets
   // one of its own, so a title that is really a path tells a person nothing.
   // The profile name is more useful in that case.
-  const rawTitle = view.title.trim();
-  const titleIsProgramPath =
-    rawTitle.includes("\\") ||
-    /\.(exe|cmd|bat|com|ps1)$/i.test(rawTitle) ||
-    /^\/[^\s]*$/.test(rawTitle);
-  const displayTitle =
-    rawTitle === "" || titleIsProgramPath
-      ? (agent?.label ?? profile?.name ?? "shell")
-      : rawTitle;
-
+  const displayTitle = displayPaneTitle(
+    view.title,
+    agent?.label ?? profile?.name ?? "shell",
+  );
+  const tone = paneTone({ snapshot: view, phase });
   const result = runState?.result ?? null;
 
   return (
@@ -213,39 +230,41 @@ export function TerminalPane({
       }}
       className="pane-shell pane-ring flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius-pane)] bg-base"
     >
-      <header className="flex h-7 shrink-0 items-center gap-2 border-b border-line/60 bg-surface/70 px-2.5 backdrop-blur-sm">
+      <header className="flex h-7 shrink-0 items-center gap-2 border-b border-line/60 bg-surface px-2">
+        <PaneGlyph tone={tone} label={TONE_LABEL[tone]} />
         <span
-          aria-hidden
-          className={`size-1.5 shrink-0 rounded-full ${STATUS_DOT[view.status]}`}
-        />
-        <span className="shrink-0 truncate text-[11px] text-ink-muted" title={displayTitle}>
+          className="shrink-0 truncate text-[11px] text-ink"
+          title={displayTitle}
+        >
           {displayTitle}
         </span>
         {view.cwd ? (
           <span
-            className="min-w-0 truncate text-[10px] text-ink-faint"
+            className="min-w-0 flex-1 truncate text-[10px] text-ink-faint"
             title={view.cwd}
           >
             {formatPath(view.cwd)}
           </span>
-        ) : null}
+        ) : (
+          <span className="flex-1" />
+        )}
         {agent?.branch ? (
-          <span
-            className="shrink-0 rounded border border-line bg-raised px-1 text-[9px] text-ink-muted"
+          <Chip
+            tone="accent"
             title={`This run is confined to the worktree on ${agent.branch}`}
           >
-            {agent.branch}
-          </span>
+            {"\u2387"} {agent.branch}
+          </Chip>
         ) : null}
         {result ? (
-          <span
-            className={`shrink-0 rounded border px-1 text-[9px] ${
+          <Chip
+            tone={
               result.status === "failed"
-                ? "border-danger/50 bg-danger/10 text-danger"
+                ? "danger"
                 : result.status === "blocked"
-                  ? "border-warn/50 bg-warn/10 text-warn"
-                  : "border-ok/50 bg-ok/10 text-ok"
-            }`}
+                  ? "warn"
+                  : "ok"
+            }
             title={
               result.files.length > 0
                 ? `The child reports: ${result.files.join(", ")}`
@@ -253,9 +272,9 @@ export function TerminalPane({
             }
           >
             {describeResult(result)}
-          </span>
+          </Chip>
         ) : null}
-        <span className="ml-auto flex shrink-0 items-center gap-2">
+        <span className="ml-1 flex shrink-0 items-center gap-2">
           {view.durationMs !== null && view.durationMs > 0 ? (
             <span
               className="text-[9px] text-ink-faint tabular-nums"
@@ -265,44 +284,32 @@ export function TerminalPane({
             </span>
           ) : null}
           {view.exitCode !== null && view.exitCode !== 0 ? (
-            <span
-              className="rounded border border-danger/50 bg-danger/10 px-1 text-[9px] text-danger"
+            <Chip
+              tone="danger"
               title={`The last command exited with status ${view.exitCode}`}
             >
               exit {view.exitCode}
-            </span>
+            </Chip>
           ) : null}
           <span
-            className="text-[10px] tracking-wide text-ink-faint uppercase"
+            className="text-[9px] tracking-wide text-ink-faint uppercase"
             title={
               agent && runState
-                ? `This run has been going for ${runState.elapsedSeconds}s`
-                : undefined
+                ? `What this run reported about itself; it has been going for ${runState.elapsedSeconds}s`
+                : "What this pane's process is doing"
             }
           >
-            {agent && runState ? PHASE_LABEL[runState.phase] : STATUS_LABEL[view.status]}
+            {agent && runState ? PHASE_LABEL[runState.phase] : TONE_LABEL[tone]}
           </span>
         </span>
         {canClose ? (
-          <button
-            type="button"
-            title="Close pane"
-            aria-label={`Close pane ${id}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onClose(id);
-            }}
-            className="pane-chrome grid size-4 shrink-0 place-items-center rounded-[4px] text-ink-faint transition-colors hover:bg-overlay hover:text-ink focus-visible:opacity-100"
-          >
-            <svg viewBox="0 0 10 10" className="size-2.5" aria-hidden>
-              <path
-                d="M1 1l8 8M9 1l-8 8"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
+          <span className="pane-chrome">
+            <CloseButton
+              label={`Close pane ${id}`}
+              title="Close pane"
+              onClick={() => onClose(id)}
+            />
+          </span>
         ) : null}
       </header>
       <div ref={hostRef} className="terminal-host min-h-0 flex-1" />

@@ -37,6 +37,14 @@ export interface PaneSnapshot {
   cwd: string | null;
   exitCode: number | null;
   durationMs: number | null;
+  /**
+   * Whether a command is running right now, from the shell's own prompt marks.
+   *
+   * Only a shell with the generated hooks reports this, so `false` means "no
+   * command is known to be running" rather than "nothing is happening". It is
+   * what lets a chip be amber for a build instead of green while one runs.
+   */
+  running: boolean;
 }
 
 const EMPTY: PaneSnapshot = {
@@ -45,6 +53,7 @@ const EMPTY: PaneSnapshot = {
   cwd: null,
   exitCode: null,
   durationMs: null,
+  running: false,
 };
 
 /**
@@ -248,12 +257,12 @@ export class PaneRuntime {
         this.term.write(
           `\r\n\x1b[38;5;245m[process exited${suffix}]\x1b[0m\r\n`,
         );
-        this.update(() => ({ status: "exited" }));
+        this.update(() => ({ status: "exited", running: false }));
         break;
       }
       case "error":
         this.term.write(`\r\n\x1b[38;5;203m[${event.message}]\x1b[0m\r\n`);
-        this.update(() => ({ status: "failed" }));
+        this.update(() => ({ status: "failed", running: false }));
         break;
       case "cwd":
         this.update(() => ({ cwd: event.path }));
@@ -277,7 +286,7 @@ export class PaneRuntime {
       }
       case "commandStart":
         this.commandStartedAt = performance.now();
-        this.update(() => ({ durationMs: null }));
+        this.update(() => ({ durationMs: null, running: true }));
         break;
       case "commandEnd": {
         const started = this.commandStartedAt;
@@ -286,6 +295,7 @@ export class PaneRuntime {
           exitCode,
           durationMs:
             started === null ? null : performance.now() - started,
+          running: false,
         }));
         break;
       }

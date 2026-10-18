@@ -10,6 +10,10 @@
 --------------------------------------------------------------------------- */
 
 @theme {
+  /* The window behind everything. Darker than a pane, so the panes read as
+     surfaces on a canvas rather than as holes cut out of one. */
+  --color-canvas: oklch(0.13 0.012 265);
+
   /* Surfaces, from the window background up to raised chrome. */
   --color-base: oklch(0.17 0.012 265);
   --color-surface: oklch(0.21 0.014 265);
@@ -55,7 +59,7 @@
   }
 
   body {
-    background-color: var(--color-base);
+    background-color: var(--color-canvas);
     color: var(--color-ink);
     font-family: var(--font-mono);
     font-size: 13px;
@@ -91,11 +95,10 @@
 }
 
 @layer components {
-  /* The accent ring that marks the focused pane. */
+  /* The hairline around every pane, and the accent ring on the focused one.
+     One pixel in both states, so focusing a pane never moves anything. */
   .pane-ring {
-    box-shadow:
-      0 0 0 1px var(--color-accent-soft),
-      0 0 0 1px transparent;
+    box-shadow: 0 0 0 1px var(--color-line);
     transition: box-shadow 180ms var(--ease-out-expo);
   }
 
