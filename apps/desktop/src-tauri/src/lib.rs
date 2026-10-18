@@ -4,7 +4,7 @@
 //! *state*. Commands return the whole workspace after a layout change so the UI
 //! never has to guess what the tree looks like.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1601,9 +1601,9 @@ struct Visit {
     me: String,
     /// The newest snapshot the host sent.
     room: Arc<Mutex<Option<hp_room::RoomSnapshot>>>,
-    /// Output that arrived, newest last, capped: a viewer is watching a screen,
-    /// not keeping a record.
-    transcript: Arc<Mutex<Vec<String>>>,
+    /// Output that arrived, by pane: a viewer is watching screens, not keeping a
+    /// record, so each pane is capped rather than the whole thing.
+    transcript: Arc<Mutex<BTreeMap<String, String>>>,
     /// The last thing the room refused, when it refused something.
     refused: Arc<Mutex<Option<String>>>,
     /// The sending half of the connection. Its own thread reads; this one
@@ -1649,7 +1649,15 @@ fn room_view(state: &AppState) -> RoomView {
             port: None,
             me: Some(visit.me.clone()),
             room: visit.room.lock().clone(),
-            transcript: visit.transcript.lock().clone(),
+            transcript: visit
+                .transcript
+                .lock()
+                .iter()
+                .map(|(pane, text)| TranscriptLine {
+                    pane: pane.clone(),
+                    text: text.clone(),
+                })
+                .collect(),
             refused: visit.refused.lock().clone(),
         },
     }
@@ -1667,10 +1675,19 @@ struct RoomView {
     me: Option<String>,
     /// The room as this instance may see it.
     room: Option<hp_room::RoomSnapshot>,
-    /// Output that arrived, newest last.
-    transcript: Vec<String>,
+    /// Output that arrived, one line per pane.
+    transcript: Vec<TranscriptLine>,
     /// The last refusal, when there was one.
     refused: Option<String>,
+}
+
+/// One pane's output, as a visitor's panel shows it. One block per pane, so a
+/// room with two shared panes is two things to watch rather than one mixture.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptLine {
+    pane: String,
+    text: String,
 }
 
 /// Name this instance by, in a room. The account name is what a person on the
@@ -1754,7 +1771,7 @@ async fn room_join(
     let me = client.me().to_string();
     let welcome = client.welcome().clone();
     let room = Arc::new(Mutex::new(Some(welcome)));
-    let transcript = Arc::new(Mutex::new(Vec::new()));
+    let transcript: Arc<Mutex<BTreeMap<String, String>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let refused = Arc::new(Mutex::new(None));
     let writer = Arc::new(Mutex::new(Some(
         client.writer().map_err(|error| error.to_string())?,
@@ -1779,12 +1796,15 @@ async fn room_join(
                         Ok(Some(hp_room::Event::Refused { because })) => {
                             *refused.lock() = Some(because);
                         }
-                        Ok(Some(hp_room::Event::Output { data, .. })) => {
+                        Ok(Some(hp_room::Event::Output { pane, data })) => {
                             let mut held = transcript.lock();
-                            held.push(data);
-                            let mut held_chars: usize = held.iter().map(String::len).sum();
-                            while held_chars > TRANSCRIPT_LIMIT && held.len() > 1 {
-                                held_chars -= held.remove(0).len();
+                            let entry = held.entry(pane).or_default();
+                            entry.push_str(&data);
+                            let length = entry.chars().count();
+                            if length > TRANSCRIPT_LIMIT {
+                                // Keep the newest: what a viewer wants is what the
+                                // pane is showing, not what it showed first.
+                                *entry = entry.chars().skip(length - TRANSCRIPT_LIMIT).collect();
                             }
                         }
                         Ok(Some(_)) => {}
@@ -1886,6 +1906,13 @@ fn room_focus(pane: Option<String>, state: State<'_, AppState>) -> RoomView {
         host.apply(hp_room::Message::Focus { pane: pane.clone() });
     });
     send_to_room(&state, hp_room::Message::Focus { pane });
+    room_view(&state)
+}
+
+/// Follow someone: the pane they are looking at becomes the one to watch.
+#[tauri::command]
+fn room_follow(who: Option<String>, state: State<'_, AppState>) -> RoomView {
+    send_to_room(&state, hp_room::Message::Follow { who });
     room_view(&state)
 }
 
@@ -2006,6 +2033,7 @@ pub fn run() {
             room_grant,
             room_revoke,
             room_focus,
+            room_follow,
             room_input,
             room_state,
             teams_list,

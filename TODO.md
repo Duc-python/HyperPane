@@ -146,12 +146,16 @@ green (tests, clippy, typecheck, and the app actually running).
       recorded, because a password is text.
 - [ ] QUIC, replacing TCP. Until then a room is loopback only, and the panel says
       so rather than pretending it is ready for a network.
-- [ ] Follow in the UI: the rules and the events exist and are tested, and nothing
-      draws them yet. The host's focus is reported when it shares a pane, so the
-      information is already there.
-- [ ] The host's panel does not yet show who may do what: it offers view, control
-      and revoke, and a grant's effect is visible on the other side rather than
-      beside the buttons.
+- [x] Follow on screen: the visitor's panel lists everyone with the pane they are
+      looking at, offers follow and stop following, and marks the followed pane.
+      That needed the transcript to be one block per pane rather than one stream.
+- [x] The host's panel says what each person may do. It used to show the host's
+      own access beside every name, which was a claim about the wrong person; the
+      snapshot now carries the grants, and only to the host.
+- [ ] The frontend tests do not run the poll: they mock `invoke` and render once.
+      A bug caused by a redraw between typing and clicking (the command box being
+      reset before send) was therefore invisible to them. Fake timers and a
+      poll-driven test would cover that shape.
 - [ ] Share pane / tab / computer in the UI, per-pane ACL.
 - [ ] Presence and follow in the UI.
 

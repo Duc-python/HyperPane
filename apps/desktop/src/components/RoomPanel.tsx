@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   roomFocus,
+  roomFollow,
   roomGrant,
   roomHost,
   roomInput,
@@ -86,6 +87,11 @@ export function RoomPanel({
   const mine = view?.room?.panes ?? [];
   const controllable = mine.find((pane) => pane.access === "control");
   const shared = mine.map((pane) => pane.pane);
+  const me = view?.room?.participants.find((entry) => entry.id === view.me) ?? null;
+  const followed = me?.following ?? null;
+  /** The pane the person I follow is looking at, when I may see it. */
+  const watching =
+    view?.room?.participants.find((entry) => entry.id === followed)?.focus ?? null;
 
   const send = () => {
     const box = typed.current;
@@ -273,10 +279,28 @@ export function RoomPanel({
                         </span>
                       ) : shared.length > 0 ? (
                         shared.map((pane) => {
+                          // What this person may do here, from the host's own
+                          // record of it rather than from what the host may do.
+                          const held =
+                            view.room?.grants.find(
+                              (grant) =>
+                                grant.pane === pane && grant.who === participant.id,
+                            )?.access ?? null;
                           return (
                             <span key={pane} className="flex items-baseline gap-1">
                               <span className="font-mono text-[9px] text-ink-faint">
                                 {pane}
+                              </span>
+                              <span
+                                className={`rounded border px-1 text-[9px] ${
+                                  held === "control"
+                                    ? "border-ok/50 bg-ok/10 text-ok"
+                                    : held === "view"
+                                      ? "border-line text-ink-muted"
+                                      : "border-line/60 text-ink-faint"
+                                }`}
+                              >
+                                {held ?? "no access"}
                               </span>
                               <button
                                 type="button"
@@ -285,7 +309,7 @@ export function RoomPanel({
                                 }
                                 className="rounded border border-line px-1 text-[9px] text-ink-muted hover:border-line-strong hover:text-ink"
                               >
-                                view
+                                can watch
                               </button>
                               <button
                                 type="button"
@@ -294,12 +318,13 @@ export function RoomPanel({
                                 }
                                 className="rounded border border-line px-1 text-[9px] text-ink-muted hover:border-line-strong hover:text-ink"
                               >
-                                control
+                                can type
                               </button>
                               <button
                                 type="button"
                                 onClick={() => act(() => roomRevoke(pane, participant.id))}
-                                className="text-[9px] text-ink-faint hover:text-danger"
+                                disabled={held === null}
+                                className="text-[9px] text-ink-faint hover:text-danger disabled:opacity-30"
                                 title={`take away whatever they have on ${pane}`}
                               >
                                 revoke
@@ -344,17 +369,85 @@ export function RoomPanel({
                 </button>
               </div>
 
+              <section>
+                <h3 className="text-[10px] tracking-wide text-ink-faint uppercase">
+                  people
+                </h3>
+                <ul className="mt-1 flex flex-col gap-1">
+                  {(view.room?.participants ?? []).map((participant) => (
+                    <li key={participant.id} className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-[11px] text-ink">
+                        {participant.name}
+                        <span className="ml-1 font-mono text-[9px] text-ink-faint">
+                          {participant.id}
+                        </span>
+                      </span>
+                      {participant.focus ? (
+                        <span className="font-mono text-[9px] text-ink-faint">
+                          looking at {participant.focus}
+                        </span>
+                      ) : null}
+                      {participant.id === view.me ? (
+                        <span className="text-[9px] tracking-wide text-ink-faint uppercase">
+                          you
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            act(() =>
+                              roomFollow(followed === participant.id ? null : participant.id),
+                            )
+                          }
+                          className="rounded border border-line px-1 text-[9px] text-ink-muted hover:border-line-strong hover:text-ink disabled:opacity-40"
+                        >
+                          {followed === participant.id ? "stop following" : "follow"}
+                        </button>
+                      )}
+                      {followed === participant.id ? (
+                        <span className="text-[9px] tracking-wide text-accent uppercase">
+                          following
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+
               <div
                 ref={tail}
                 aria-label="Transcript"
-                className="max-h-56 min-h-24 overflow-auto rounded border border-line/60 bg-base px-2 py-1 font-mono text-[11px] whitespace-pre-wrap text-ink"
+                className="max-h-56 min-h-24 overflow-auto rounded border border-line/60 bg-base px-2 py-1"
               >
                 {view.transcript.length === 0 ? (
-                  <span className="text-ink-faint">
+                  <span className="font-mono text-[11px] text-ink-faint">
                     nothing yet: the host shares a pane and output arrives here
                   </span>
                 ) : (
-                  strip(view.transcript.join(""))
+                  view.transcript.map((line) => (
+                    <section key={line.pane} className="mb-1 last:mb-0">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-mono text-[9px] text-ink-faint">
+                          {line.pane}
+                        </span>
+                        {watching === line.pane ? (
+                          <span className="text-[9px] tracking-wide text-accent uppercase">
+                            the one you are following
+                          </span>
+                        ) : null}
+                      </div>
+                      <pre
+                        className={`overflow-x-auto rounded border px-1.5 py-1 font-mono text-[11px] whitespace-pre-wrap text-ink ${
+                          watching === line.pane
+                            ? "border-accent-strong bg-accent-soft/20"
+                            : "border-line/40"
+                        }`}
+                      >
+                        {strip(line.text)}
+                      </pre>
+                    </section>
+                  ))
                 )}
               </div>
 

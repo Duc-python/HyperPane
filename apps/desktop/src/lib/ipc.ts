@@ -333,11 +333,25 @@ export interface RoomPaneView {
   access: RoomAccess;
 }
 
+/** What one participant may do in one pane. Only the host is sent these. */
+export interface RoomGrant {
+  pane: string;
+  who: string;
+  access: RoomAccess;
+}
+
 /** The room as this instance may see it. Built per participant by the host. */
 export interface RoomSnapshot {
   id: string;
   participants: RoomParticipant[];
   panes: RoomPaneView[];
+  grants: RoomGrant[];
+}
+
+/** One pane's output, as a visitor's panel shows it. */
+export interface RoomTranscriptLine {
+  pane: string;
+  text: string;
 }
 
 export interface RoomView {
@@ -348,8 +362,8 @@ export interface RoomView {
   /** The id this instance has in the room, when it visits. */
   me: string | null;
   room: RoomSnapshot | null;
-  /** Output that arrived, newest last. Only a visitor has this. */
-  transcript: string[];
+  /** Output that arrived, one line per pane. Only a visitor has this. */
+  transcript: RoomTranscriptLine[];
   /** The last refusal, when there was one. */
   refused: string | null;
 }
@@ -374,6 +388,10 @@ export const roomRevoke = (pane: string, who: string) =>
 /** Say which pane this instance is looking at, so a follower can follow. */
 export const roomFocus = (pane: string | null) =>
   invoke<RoomView>("room_focus", { pane });
+
+/** Follow someone: the pane they are looking at becomes the one to watch. */
+export const roomFollow = (who: string | null) =>
+  invoke<RoomView>("room_follow", { who });
 
 /** Type into a pane shared with this instance, if it may. */
 export const roomInput = (pane: string, data: string) =>

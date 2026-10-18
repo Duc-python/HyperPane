@@ -85,6 +85,19 @@ pub struct PaneView {
     pub access: Access,
 }
 
+/// What one participant may do in one pane.
+///
+/// Only the host is ever sent these: it is the host that decides them, and
+/// telling a participant about another's access would be telling it about a
+/// third person rather than about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantView {
+    pub pane: String,
+    pub who: ParticipantId,
+    pub access: Access,
+}
+
 /// The room as one participant may see it. Built per participant, never shared
 /// between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +107,9 @@ pub struct RoomSnapshot {
     pub participants: Vec<Participant>,
     /// Only the panes this participant may see.
     pub panes: Vec<PaneView>,
+    /// Who may do what. Empty for everyone but the host.
+    #[serde(default)]
+    pub grants: Vec<GrantView>,
 }
 
 /// What a participant asks for.
@@ -343,6 +359,24 @@ impl Room {
 
     /// The room as one participant may see it.
     pub fn snapshot_for(&self, who: &str) -> RoomSnapshot {
+        // Who may do what is the host's business: it is the host that decides,
+        // and a participant learning another's grants would be learning about a
+        // third person rather than about itself.
+        let grants = if who == HOST {
+            self.grants
+                .iter()
+                .flat_map(|(pane, granted)| {
+                    granted.iter().map(move |(who, access)| GrantView {
+                        pane: pane.clone(),
+                        who: who.clone(),
+                        access: *access,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let panes = if who == HOST {
             self.shared
                 .iter()
@@ -370,6 +404,7 @@ impl Room {
             id: self.id.clone(),
             participants: self.participants.values().cloned().collect(),
             panes,
+            grants,
         }
     }
 
@@ -1089,6 +1124,27 @@ mod tests {
             .is_some_and(|participant| participant.following.is_none()));
         // A grant is about a person, so it survives the connection.
         assert_eq!(room.access(&controller, "secret"), Some(Access::Control));
+    }
+
+    #[test]
+    fn only_the_host_is_told_who_may_do_what() {
+        let (room, viewer, controller, outsider) = room();
+
+        let host_view = room.snapshot_for(HOST);
+        assert!(host_view.grants.iter().any(|grant| grant.pane == "secret"
+            && grant.who == viewer
+            && grant.access == Access::View));
+        assert!(host_view.grants.iter().any(|grant| grant.pane == "secret"
+            && grant.who == controller
+            && grant.access == Access::Control));
+
+        // A participant is told what it may do, and nothing about anybody else.
+        for other in [&viewer, &controller, &outsider] {
+            assert!(
+                room.snapshot_for(other).grants.is_empty(),
+                "a participant was told about somebody else's access"
+            );
+        }
     }
 
     #[test]
