@@ -125,9 +125,18 @@ green (tests, clippy, typecheck, and the app actually running).
 
 ## P5 — control rooms
 
-- [ ] Host-authoritative room over QUIC, LAN first
-- [ ] Share pane / tab / computer, per-pane ACL
-- [ ] Presence and follow mode
+- [x] `hp-room`: the rules, host-authoritative — participants, which panes are
+      shared, and what each may do in each. Access filters the snapshot rather
+      than only the actions, so a participant is never told that a pane it may not
+      see exists. Presence never names an invisible pane either.
+- [x] A stream for the room: newline-delimited JSON over TCP, with the message
+      size bounded before parsing. This is what two builds on one machine will
+      talk over before QUIC arrives, and it is explicitly not a security
+      boundary — identity is whatever the stream is attached to.
+- [ ] QUIC, and the host loop that accepts connections, applies messages and fans
+      out events. Until that exists the room is a library, not a feature.
+- [ ] Share pane / tab / computer in the UI, per-pane ACL.
+- [ ] Presence and follow in the UI.
 
 ## P6 — mesh
 
