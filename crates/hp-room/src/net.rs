@@ -102,6 +102,18 @@ impl Connection {
         Ok(())
     }
 
+    /// A handle that can only write.
+    ///
+    /// One thread listens and another sends, and neither has to wait for the
+    /// other's read to time out. A timeout is how a single thread pretends to do
+    /// both, and it is the wrong tool: a read that is waiting for an event has
+    /// no reason to care what the UI wants to send.
+    pub fn writer(&self) -> Result<Writer, NetError> {
+        Ok(Writer {
+            stream: self.stream.try_clone()?,
+        })
+    }
+
     /// One line, refused if it is longer than the limit.
     ///
     /// The read is bounded, so an endless line cannot grow this process. A line
@@ -123,6 +135,28 @@ impl Connection {
         }
 
         Ok(Some(line.trim_end().to_string()))
+    }
+}
+
+/// The sending half of a connection, on its own thread.
+#[derive(Debug)]
+pub struct Writer {
+    stream: TcpStream,
+}
+
+impl Writer {
+    /// Send one message, flushed.
+    pub fn send<T: Serialize>(&mut self, message: &T) -> Result<(), NetError> {
+        let mut line = encode(message)?;
+        line.push('\n');
+        self.stream.write_all(line.as_bytes())?;
+        self.stream.flush()?;
+        Ok(())
+    }
+
+    /// Close the connection. A reader blocked on it is woken by the end.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
 

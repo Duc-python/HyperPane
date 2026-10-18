@@ -222,25 +222,18 @@ fn serve(
     deliver(&peers, applied.deliveries);
 
     // Read until the peer goes away, applying each message as it arrives.
-    loop {
-        match connection.next_message() {
-            Ok(Some(message)) => {
-                let (deliveries, writes) = match room.lock() {
-                    Ok(mut room) => {
-                        let applied = room.apply(&id, message);
-                        (applied.deliveries, applied.effects)
-                    }
-                    Err(_) => break,
-                };
-                for effect in writes {
-                    let _ = effects.send(effect);
-                }
-                deliver(&peers, deliveries);
+    while let Ok(Some(message)) = connection.next_message() {
+        let (deliveries, writes) = match room.lock() {
+            Ok(mut room) => {
+                let applied = room.apply(&id, message);
+                (applied.deliveries, applied.effects)
             }
-            // A clean end, a closed socket, or a line that was not a message all
-            // mean this peer is done.
-            Ok(None) | Err(_) => break,
+            Err(_) => break,
+        };
+        for effect in writes {
+            let _ = effects.send(effect);
         }
+        deliver(&peers, deliveries);
     }
 
     let applied = match room.lock() {

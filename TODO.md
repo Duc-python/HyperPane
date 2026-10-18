@@ -138,10 +138,20 @@ green (tests, clippy, typecheck, and the app actually running).
       and listens. Effects come back through a channel, because writing into a
       pane belongs to the app that owns the PTY. Seven tests over real loopback
       sockets, including output that must *not* reach someone without a grant.
-- [ ] The same in the app: commands, a panel, and the hook that mirrors a pane's
-      output into the room. Until that exists the room is a library, not a
-      feature.
-- [ ] QUIC, replacing TCP once the rules have been through a real session.
+- [x] The same in the app: nine commands, a panel, and the hook that mirrors a
+      pane's output into the room. Verified with two instances on one machine: A
+      hosts and shares its pane, B joins, A grants control, and a command typed in
+      B runs in A's shell with the output arriving back in B's transcript. Every
+      remote keystroke is a `room.input` line in the activity log; the text is not
+      recorded, because a password is text.
+- [ ] QUIC, replacing TCP. Until then a room is loopback only, and the panel says
+      so rather than pretending it is ready for a network.
+- [ ] Follow in the UI: the rules and the events exist and are tested, and nothing
+      draws them yet. The host's focus is reported when it shares a pane, so the
+      information is already there.
+- [ ] The host's panel does not yet show who may do what: it offers view, control
+      and revoke, and a grant's effect is visible on the other side rather than
+      beside the buttons.
 - [ ] Share pane / tab / computer in the UI, per-pane ACL.
 - [ ] Presence and follow in the UI.
 

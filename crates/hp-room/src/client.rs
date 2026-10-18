@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::net::{Connection, Hello, NetError};
+use crate::net::{Connection, Hello, NetError, Writer};
 use crate::{Event, Message, ParticipantId, RoomSnapshot};
 
 #[derive(Debug, Error)]
@@ -90,5 +90,11 @@ impl Client {
     /// The next thing the host says, or `None` when it closed the room.
     pub fn next_event(&mut self) -> Result<Option<Event>, ClientError> {
         Ok(self.connection.next_event()?)
+    }
+
+    /// The sending half, for a caller that listens on one thread and sends from
+    /// another. The client itself is busy waiting for the host.
+    pub fn writer(&self) -> Result<Writer, ClientError> {
+        Ok(self.connection.writer()?)
     }
 }

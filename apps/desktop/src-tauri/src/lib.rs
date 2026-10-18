@@ -8,12 +8,14 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use hp_agents::guard::{Limits, SpawnGuard};
 use hp_agents::result::{ResultScanner, RunResult};
 use hp_core::{Session, SplitDirection, Workspace};
 use hp_pty::{EventSink, PaneManager, PaneSpec, PtyEvent};
+use hp_room::{Access, Host};
 use hp_store::audit::{AuditLog, Entry as AuditEntry};
 use hp_store::SessionStore;
 use hp_teams::{Advance, Hold, PlannedMember};
@@ -154,6 +156,10 @@ struct AppState {
     /// Where the record of what has been approved lives.
     trust_path: PathBuf,
     plugins: Arc<Mutex<Option<hp_mcp::Host>>>,
+    /// The room this instance is hosting, if it is hosting one.
+    room_host: Arc<Mutex<Option<Host>>>,
+    /// The room this instance has joined, if it has joined one.
+    room_visit: Arc<Mutex<Option<Visit>>>,
 }
 
 /// Where the app keeps the files it owns.
@@ -202,6 +208,8 @@ impl AppState {
             plugins_path: paths.plugins,
             trust_path: paths.trust,
             plugins: Arc::new(Mutex::new(None)),
+            room_host: Arc::new(Mutex::new(None)),
+            room_visit: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -346,6 +354,7 @@ fn pane_spawn(
 
     let runs = Arc::clone(&state.runs);
     let directories = Arc::clone(&state.directories);
+    let rooms = Arc::clone(&state.room_host);
     let sink: EventSink = Arc::new(move |event| {
         // A child's report is read from the stream it already writes to; no
         // extra channel is needed, and the terminal still receives every byte.
@@ -366,6 +375,13 @@ fn pane_spawn(
                     }
                 }
                 _ => {}
+            }
+        }
+        // Whoever is watching this pane in a room sees what it prints. The room
+        // decides who that is; an unshared pane goes nowhere.
+        if let PtyEvent::Data { chunk } = &event {
+            if let Some(host) = rooms.lock().as_ref() {
+                host.mirror(&pane_id, chunk);
             }
         }
         if let PtyEvent::Cwd { path } = &event {
@@ -1579,6 +1595,331 @@ async fn plugins_call(
     .map_err(|error| error.to_string())?
 }
 
+/// A room this instance is visiting.
+struct Visit {
+    /// The id the host gave this instance.
+    me: String,
+    /// The newest snapshot the host sent.
+    room: Arc<Mutex<Option<hp_room::RoomSnapshot>>>,
+    /// Output that arrived, newest last, capped: a viewer is watching a screen,
+    /// not keeping a record.
+    transcript: Arc<Mutex<Vec<String>>>,
+    /// The last thing the room refused, when it refused something.
+    refused: Arc<Mutex<Option<String>>>,
+    /// The sending half of the connection. Its own thread reads; this one
+    /// writes, and neither waits for the other.
+    writer: Arc<Mutex<Option<hp_room::net::Writer>>>,
+}
+
+/// How much output a visitor keeps, in characters. A pane can produce faster
+/// than a person reads, and this is a view rather than a log.
+const TRANSCRIPT_LIMIT: usize = 32 * 1024;
+
+/// The newest view of whatever this instance is doing with rooms.
+fn room_view(state: &AppState) -> RoomView {
+    let hosting = state
+        .room_host
+        .lock()
+        .as_ref()
+        .and_then(|host| host.snapshot().map(|room| (host.port(), room)));
+
+    if let Some((port, room)) = hosting {
+        return RoomView {
+            mode: "hosting",
+            port: Some(port),
+            me: Some(hp_room::HOST.to_string()),
+            room: Some(room),
+            transcript: Vec::new(),
+            refused: None,
+        };
+    }
+
+    let visiting = state.room_visit.lock();
+    match visiting.as_ref() {
+        None => RoomView {
+            mode: "off",
+            port: None,
+            me: None,
+            room: None,
+            transcript: Vec::new(),
+            refused: None,
+        },
+        Some(visit) => RoomView {
+            mode: "visiting",
+            port: None,
+            me: Some(visit.me.clone()),
+            room: visit.room.lock().clone(),
+            transcript: visit.transcript.lock().clone(),
+            refused: visit.refused.lock().clone(),
+        },
+    }
+}
+
+/// What this instance is doing with rooms, as the UI needs it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoomView {
+    /// `off`, `hosting` or `visiting`.
+    mode: &'static str,
+    /// The port this instance is listening on, when it is hosting.
+    port: Option<u16>,
+    /// The id this instance has in the room, when it is visiting.
+    me: Option<String>,
+    /// The room as this instance may see it.
+    room: Option<hp_room::RoomSnapshot>,
+    /// Output that arrived, newest last.
+    transcript: Vec<String>,
+    /// The last refusal, when there was one.
+    refused: Option<String>,
+}
+
+/// Name this instance by, in a room. The account name is what a person on the
+/// other end would recognise, and it is a claim either way.
+fn account_name() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "someone".to_string())
+}
+
+/// Host a room on this machine.
+///
+/// The listener is loopback for now: what a room will be over a network is
+/// QUIC's job, and until that exists this must not be reachable from one.
+#[tauri::command]
+fn room_host(port: u16, state: State<'_, AppState>) -> Result<RoomView, String> {
+    if state.room_host.lock().is_some() {
+        return Ok(room_view(&state));
+    }
+
+    let (host, effects) = hp_room::Host::start(&format!("127.0.0.1:{port}"), &account_name())
+        .map_err(|error| error.to_string())?;
+
+    // Effects are the room telling the app to type into a pane. It is a thread
+    // of its own so a slow pane write never holds up the room's socket threads.
+    let panes = Arc::clone(&state.panes);
+    let audit = state.audit.path().to_path_buf();
+    thread::Builder::new()
+        .name("hp-room-effects".to_string())
+        .spawn(move || {
+            let log = AuditLog::new(&audit);
+            for effect in effects {
+                match effect {
+                    hp_room::Effect::Write { pane, data } => {
+                        // A remote keystroke into a person's shell is exactly the
+                        // kind of thing the activity log is for. What was typed is
+                        // not recorded: it can be a password.
+                        match panes.write(&pane, &data) {
+                            Ok(()) => {
+                                let _ = log.append(&AuditEntry::new(
+                                    "room.input",
+                                    format!("typed into {pane}"),
+                                ));
+                            }
+                            Err(error) => {
+                                let _ = log.append(&AuditEntry::new(
+                                    "room.input",
+                                    format!("could not type into {pane}: {error}"),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    let port = host.port();
+    *state.room_host.lock() = Some(host);
+    let _ = state.audit.append(&AuditEntry::new(
+        "room.host",
+        format!("listening on 127.0.0.1:{port}"),
+    ));
+
+    Ok(room_view(&state))
+}
+
+/// Join a room someone else is hosting.
+#[tauri::command]
+async fn room_join(
+    address: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<RoomView, String> {
+    room_leave(&state);
+
+    let timeout = std::time::Duration::from_secs(5);
+    let mut client =
+        hp_room::Client::join(&address, &name, timeout).map_err(|error| error.to_string())?;
+
+    let me = client.me().to_string();
+    let welcome = client.welcome().clone();
+    let room = Arc::new(Mutex::new(Some(welcome)));
+    let transcript = Arc::new(Mutex::new(Vec::new()));
+    let refused = Arc::new(Mutex::new(None));
+    let writer = Arc::new(Mutex::new(Some(
+        client.writer().map_err(|error| error.to_string())?,
+    )));
+
+    {
+        let room = Arc::clone(&room);
+        let transcript = Arc::clone(&transcript);
+        let refused = Arc::clone(&refused);
+
+        thread::Builder::new()
+            .name("hp-room-visit".to_string())
+            .spawn(move || {
+                // This thread only reads. Sending happens on whichever thread the
+                // UI called, through the writer, so a quiet room does not block a
+                // keystroke and a read never has to time out to notice one.
+                loop {
+                    match client.next_event() {
+                        Ok(Some(hp_room::Event::Snapshot { room: next })) => {
+                            *room.lock() = Some(next);
+                        }
+                        Ok(Some(hp_room::Event::Refused { because })) => {
+                            *refused.lock() = Some(because);
+                        }
+                        Ok(Some(hp_room::Event::Output { data, .. })) => {
+                            let mut held = transcript.lock();
+                            held.push(data);
+                            let mut held_chars: usize = held.iter().map(String::len).sum();
+                            while held_chars > TRANSCRIPT_LIMIT && held.len() > 1 {
+                                held_chars -= held.remove(0).len();
+                            }
+                        }
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            // A dead connection must not look like a quiet room.
+                            *refused.lock() = Some("the host closed the room".to_string());
+                            break;
+                        }
+                        Err(error) => {
+                            *refused.lock() = Some(format!("the room connection failed: {error}"));
+                            break;
+                        }
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+    }
+
+    *state.room_visit.lock() = Some(Visit {
+        me: me.clone(),
+        room,
+        transcript,
+        refused,
+        writer,
+    });
+    let _ = state.audit.append(&AuditEntry::new(
+        "room.join",
+        format!("{address} as {name}, joining as {me}"),
+    ));
+
+    Ok(room_view(&state))
+}
+
+/// Stop hosting, or stop visiting. Either way this instance leaves the room.
+#[tauri::command]
+fn room_stop(state: State<'_, AppState>) -> RoomView {
+    room_leave(&state);
+    if let Some(host) = state.room_host.lock().take() {
+        host.stop();
+        let _ = state
+            .audit
+            .append(&AuditEntry::new("room.stop", "stopped hosting"));
+    }
+    room_view(&state)
+}
+
+fn room_leave(state: &AppState) {
+    if let Some(visit) = state.room_visit.lock().take() {
+        // Closing the socket is what ends the reader: it is blocked waiting for
+        // an event that will now never come.
+        if let Some(writer) = visit.writer.lock().take() {
+            writer.close();
+        }
+    }
+}
+
+/// Offer one of this instance's panes to the room. The host's own decision.
+#[tauri::command]
+fn room_share(pane: String, state: State<'_, AppState>) -> RoomView {
+    with_host(&state, |host| {
+        host.apply(hp_room::Message::Share { pane: pane.clone() });
+        // Sharing a pane is also saying "this is what I am looking at", which is
+        // what presence shows and what a follower follows.
+        host.apply(hp_room::Message::Focus { pane: Some(pane) });
+    });
+    room_view(&state)
+}
+
+/// Stop offering it. Every grant on it goes too.
+#[tauri::command]
+fn room_unshare(pane: String, state: State<'_, AppState>) -> RoomView {
+    with_host(&state, |host| {
+        host.apply(hp_room::Message::Unshare { pane });
+    });
+    room_view(&state)
+}
+
+/// Say what one participant may do in one pane.
+#[tauri::command]
+fn room_grant(pane: String, who: String, access: Access, state: State<'_, AppState>) -> RoomView {
+    with_host(&state, |host| {
+        host.apply(hp_room::Message::Grant { pane, who, access });
+    });
+    room_view(&state)
+}
+
+#[tauri::command]
+fn room_revoke(pane: String, who: String, state: State<'_, AppState>) -> RoomView {
+    with_host(&state, |host| {
+        host.apply(hp_room::Message::Revoke { pane, who });
+    });
+    room_view(&state)
+}
+
+/// Say which pane this instance is looking at, so a follower can follow.
+#[tauri::command]
+fn room_focus(pane: Option<String>, state: State<'_, AppState>) -> RoomView {
+    with_host(&state, |host| {
+        host.apply(hp_room::Message::Focus { pane: pane.clone() });
+    });
+    send_to_room(&state, hp_room::Message::Focus { pane });
+    room_view(&state)
+}
+
+/// Type into a pane that is shared with this instance, if it may.
+#[tauri::command]
+fn room_input(pane: String, data: String, state: State<'_, AppState>) -> RoomView {
+    send_to_room(&state, hp_room::Message::Input { pane, data });
+    room_view(&state)
+}
+
+/// Send one message to the room this instance has joined, if it has.
+///
+/// A failed send is not silent: the reader thread notices the closed connection
+/// and puts the reason on screen, which is where a person will look.
+fn send_to_room(state: &AppState, message: hp_room::Message) {
+    if let Some(visit) = state.room_visit.lock().as_ref() {
+        if let Some(writer) = visit.writer.lock().as_mut() {
+            let _ = writer.send(&message);
+        }
+    }
+}
+
+#[tauri::command]
+fn room_state(state: State<'_, AppState>) -> RoomView {
+    room_view(&state)
+}
+
+/// Run something against the host, if this instance is hosting.
+fn with_host(state: &AppState, work: impl FnOnce(&hp_room::Host)) {
+    if let Some(host) = state.room_host.lock().as_ref() {
+        work(host);
+    }
+}
+
 /// Where a pane's shell last said it was, if it reports that at all.
 #[tauri::command]
 fn pane_cwd(id: String, state: State<'_, AppState>) -> Option<String> {
@@ -1657,6 +1998,16 @@ pub fn run() {
             plugins_open,
             plugins_approve,
             plugins_call,
+            room_host,
+            room_join,
+            room_stop,
+            room_share,
+            room_unshare,
+            room_grant,
+            room_revoke,
+            room_focus,
+            room_input,
+            room_state,
             teams_list,
             team_plan,
             team_start,

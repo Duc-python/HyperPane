@@ -316,6 +316,71 @@ export const pluginsApprove = (id: string) =>
 export const pluginsCall = (id: string, tool: string, args: unknown) =>
   invoke<PluginCalled>("plugins_call", { id, tool, arguments: args });
 
+/** What this instance may do in a pane it shares. */
+export type RoomAccess = "view" | "control";
+
+export interface RoomParticipant {
+  id: string;
+  name: string;
+  /** The pane they are looking at, when it is one you may see. */
+  focus: string | null;
+  following: string | null;
+  host: boolean;
+}
+
+export interface RoomPaneView {
+  pane: string;
+  access: RoomAccess;
+}
+
+/** The room as this instance may see it. Built per participant by the host. */
+export interface RoomSnapshot {
+  id: string;
+  participants: RoomParticipant[];
+  panes: RoomPaneView[];
+}
+
+export interface RoomView {
+  /** `off`, `hosting` or `visiting`. */
+  mode: "off" | "hosting" | "visiting";
+  /** The port this instance listens on, when it hosts. */
+  port: number | null;
+  /** The id this instance has in the room, when it visits. */
+  me: string | null;
+  room: RoomSnapshot | null;
+  /** Output that arrived, newest last. Only a visitor has this. */
+  transcript: string[];
+  /** The last refusal, when there was one. */
+  refused: string | null;
+}
+
+export const roomHost = (port: number) => invoke<RoomView>("room_host", { port });
+
+export const roomJoin = (address: string, name: string) =>
+  invoke<RoomView>("room_join", { address, name });
+
+export const roomStop = () => invoke<RoomView>("room_stop");
+
+export const roomShare = (pane: string) => invoke<RoomView>("room_share", { pane });
+
+export const roomUnshare = (pane: string) => invoke<RoomView>("room_unshare", { pane });
+
+export const roomGrant = (pane: string, who: string, access: RoomAccess) =>
+  invoke<RoomView>("room_grant", { pane, who, access });
+
+export const roomRevoke = (pane: string, who: string) =>
+  invoke<RoomView>("room_revoke", { pane, who });
+
+/** Say which pane this instance is looking at, so a follower can follow. */
+export const roomFocus = (pane: string | null) =>
+  invoke<RoomView>("room_focus", { pane });
+
+/** Type into a pane shared with this instance, if it may. */
+export const roomInput = (pane: string, data: string) =>
+  invoke<RoomView>("room_input", { pane, data });
+
+export const roomState = () => invoke<RoomView>("room_state");
+
 export type Archetype =
   | "reviewer"
   | "pipeline"
