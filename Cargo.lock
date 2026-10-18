@@ -1624,6 +1624,7 @@ dependencies = [
  "hp-core",
  "hp-mcp",
  "hp-pty",
+ "hp-room",
  "hp-shell",
  "hp-store",
  "hp-teams",

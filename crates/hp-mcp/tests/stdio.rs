@@ -193,9 +193,17 @@ fn an_unknown_tool_is_a_refusal_and_the_server_stays_usable() {
         other => panic!("expected a refusal, got {other}"),
     }
 
-    // What the server said on stderr is kept, because that is where a server
-    // explains itself.
-    let tail = server.stderr_tail().join("\n");
+    // What the server said on stderr is read by its own thread, so it can be a
+    // moment behind the reply on stdout. Waiting for it is the test being
+    // honest about that rather than a race that fails once in a while.
+    let mut tail = String::new();
+    for _ in 0..20 {
+        tail = server.stderr_tail().join("\n");
+        if tail.contains("refusing to call nope") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
         tail.contains("refusing to call nope"),
         "stderr tail was {tail:?}"
