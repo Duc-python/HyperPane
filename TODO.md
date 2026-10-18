@@ -161,7 +161,15 @@ green (tests, clippy, typecheck, and the app actually running).
 
 ## P6 — mesh
 
-- [ ] Device identity (ed25519), pairing by code/QR, TOFU pinning
+- [x] `hp-identity`: this machine's key pair, its name (the public key itself, so
+      nothing has to be looked up), signing and verification, and the pairing code
+      two machines share — sixty bits of it, stretched before use, because a short
+      code can be guessed from a recorded handshake.
+- [ ] Pairing over the wire, and the pinning store: a peer's key is remembered
+      the first time it is seen, and a key that changed is refused with what
+      changed. Nothing uses `hp-identity` yet.
+- [ ] QUIC for the room, with the certificate bound to the identity above. The
+      room is loopback until then.
 - [ ] Standing access password, temporary grants (≤ 7 days)
 - [ ] My computers: open a pane on another machine
 - [ ] Self-hosted relay

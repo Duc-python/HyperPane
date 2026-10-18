@@ -1,0 +1,21 @@
+[package]
+name = "hp-identity"
+description = "Who this machine is, and how another one can be sure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# ed25519 from the RustCrypto family: signing and verification are the last
+# things to hand-roll, and every one of these is widely reviewed.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
