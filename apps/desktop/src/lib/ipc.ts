@@ -157,6 +157,8 @@ export interface Session {
   workspace: Workspace | null;
   profiles: Profile[];
   defaultProfile: string | null;
+  /** Which profile each pane opened with, by pane id. */
+  panes: Record<string, string>;
 }
 
 /** Mirrors `hp_agents::result::RunResult`. */

@@ -197,12 +197,36 @@ green (tests, clippy, typecheck, and the app actually running).
       source is where this build came from and a stale path is worse than an edit.
 - [x] Settings shows that path with what it is for: pull, build, restart from a
       pane opened there.
+- [x] `Update from source…` runs the update in a pane where it can be watched,
+      read back and interrupted, rather than behind a person's back: `git pull
+      --ff-only`, `pnpm install`, and then the build. The steps are guarded, so a
+      failed pull stops the rest instead of leaving a green pane over a revision
+      that never arrived.
+- [ ] Windows cannot finish that update while the app runs: the executable is
+      locked and cargo fails at the last step with "failed to remove file ...
+      Access is denied" (measured, not assumed). So the compile is only checked
+      there, and the last line of the pane names the command that finishes it once
+      the window is closed. macOS and Linux build in place, because a running
+      program keeps its inode.
 - [ ] Self-update proper. Tauri's updater requires a signing key that must be kept
       forever, the public key in the config, and a published endpoint carrying
       signed artifacts. This app has no release channel, so there is nothing honest
       to point it at — and inventing one would mean a version of "updated" that is
       not true. Until then, updating means pulling and building the source that the
       pane above is open on.
-- [ ] Restarting from inside the app (`tauri-plugin-process`). Harmless alone, but
-      it would read as "I updated myself" while the build is still the old one, so
-      it belongs with the signed updater, once a release channel exists.
+- [ ] Restarting from inside the app (`tauri-plugin-process`), which is what would
+      close the loop on Windows: quit, build, come back. Harmless alone, but it
+      would read as "I updated myself" while the build is still the old one, so it
+      belongs with the signed updater, once a release channel exists.
+- [x] A pane comes back with the profile it opened with: the session stores the
+      mapping beside the layout, and an entry is dropped when its pane is gone. A
+      pane the file does not mention opens with the default profile, as does one
+      whose profile has since been deleted - a pane has to open with something.
+- [ ] An *agent* pane still comes back as a shell. The session stores the profile,
+      not the agent, so a restart forgets which CLI a pane was running (and which
+      worktree it was confined to). It needs the catalogue id and the worktree
+      stored beside the profile.
+- [ ] A webview reload restarts every shell. That is deliberate - on boot the app
+      closes the leftover PTYs and lets each pane open its own, so nothing is
+      orphaned - but it costs the scrollback and whatever was running. Re-attaching
+      instead would need the backend to hand an existing session to a new channel.

@@ -68,8 +68,31 @@ export function ensureSelfProfile(profiles: Profile[], source: string): Profile[
   );
 }
 
-/** A new profile with a name and an id that nothing else is using. */
-export function createProfile(existing: readonly Profile[]): Profile {
+/**
+ * The profile each pane opens with, after a restart.
+ *
+ * The layout says where the panes were, not how they were opened, so the choice
+ * is stored beside it. A stored choice wins; a pane the file does not mention
+ * opens with the default profile, and so does one whose profile has since been
+ * deleted. A pane has to open with something: a shell with the wrong profile
+ * beats a pane that never comes back.
+ */
+export function panesWithProfiles(
+  panes: readonly string[],
+  stored: Readonly<Record<string, string>>,
+  available: readonly Profile[],
+  fallback: string,
+): Record<string, string> {
+  const known = new Set(available.map((profile) => profile.id));
+  return Object.fromEntries(
+    panes.map((pane) => {
+      const chosen = stored[pane];
+      return [pane, chosen && known.has(chosen) ? chosen : fallback];
+    }),
+  );
+}
+
+/** A new profile with a name and an id that nothing else is using. */export function createProfile(existing: readonly Profile[]): Profile {
   const taken = existing.map((profile) => profile.id);
   const names = new Set(existing.map((profile) => profile.name));
   let number = existing.length + 1;

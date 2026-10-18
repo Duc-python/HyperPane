@@ -6,6 +6,7 @@
 //! relative (a ratio per split), so a saved layout reflows to any window size.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub type PaneId = String;
 
@@ -321,6 +322,15 @@ pub struct Session {
     #[serde(default)]
     pub profiles: Vec<Profile>,
     pub default_profile: Option<String>,
+    /// Which profile each pane opened with, by pane id.
+    ///
+    /// The layout alone does not say how a pane was opened, and the difference
+    /// shows: a pane on a checkout comes back as a shell in whatever directory the
+    /// app was started from, with the wrong shell and without the profile's
+    /// environment. A pane this map does not mention - a new one, or one from a
+    /// file written before panes were remembered - opens with the default profile.
+    #[serde(default)]
+    pub panes: BTreeMap<PaneId, String>,
 }
 
 impl Default for Session {
@@ -336,6 +346,7 @@ impl Session {
             workspace: None,
             profiles: vec![Profile::default_shell()],
             default_profile: Some("default".to_string()),
+            panes: BTreeMap::new(),
         }
     }
 
@@ -377,6 +388,15 @@ impl Session {
         {
             self.default_profile = self.profiles.first().map(|p| p.id.clone());
         }
+        // A pane's profile is worth remembering only while the pane exists. A
+        // workspace that has been dropped takes every pane with it, and an entry
+        // left behind would attach a profile to a pane that will never come back.
+        let live = self
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.layout.pane_ids())
+            .unwrap_or_default();
+        self.panes.retain(|pane, _| live.contains(pane));
         self
     }
 }
@@ -551,6 +571,67 @@ mod tests {
             workspace.layout = LayoutNode::leaf("");
         }
         assert!(session.normalise().workspace.is_none());
+    }
+
+    #[test]
+    fn a_pane_remembers_the_profile_it_opened_with() {
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace {
+            id: "w".into(),
+            name: "w".into(),
+            layout: LayoutNode::leaf("p1"),
+            focused: Some("p1".into()),
+            active: true,
+        });
+        session.panes.insert("p1".into(), "source".into());
+
+        let json = serde_json::to_string(&session).expect("serialize");
+        let back: Session = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.panes.get("p1").map(String::as_str), Some("source"));
+    }
+
+    #[test]
+    fn a_session_from_before_panes_were_remembered_still_loads() {
+        // The field is absent rather than empty in a file written by an older
+        // build, and a missing map must not stop the session from loading.
+        let old = r#"{
+            "version": 1,
+            "workspace": null,
+            "profiles": [],
+            "defaultProfile": "default"
+        }"#;
+
+        let session: Session = serde_json::from_str(old).expect("deserialize");
+        assert!(session.panes.is_empty());
+    }
+
+    #[test]
+    fn normalise_forgets_panes_that_are_no_longer_in_the_layout() {
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace {
+            id: "w".into(),
+            name: "w".into(),
+            layout: LayoutNode::leaf("p1"),
+            focused: Some("p1".into()),
+            active: true,
+        });
+        session.panes.insert("p1".into(), "source".into());
+        // A pane that was closed, whose entry a half-written file kept.
+        session.panes.insert("p2".into(), "source".into());
+
+        let repaired = session.normalise();
+
+        assert_eq!(repaired.panes.get("p1").map(String::as_str), Some("source"));
+        assert!(!repaired.panes.contains_key("p2"));
+    }
+
+    #[test]
+    fn normalise_forgets_every_pane_when_the_workspace_is_gone() {
+        let mut session = Session::empty();
+        session.panes.insert("p1".into(), "source".into());
+
+        assert!(session.normalise().panes.is_empty());
     }
 
     #[test]

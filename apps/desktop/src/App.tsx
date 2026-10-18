@@ -46,7 +46,8 @@ import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings
 import { shortenPath } from "./lib/paths";
 import { describeResult, openPaneAgent, type PaneAgent } from "./lib/agents";
 import { displayPaneTitle, paneRows, type PaneLive } from "./lib/panes";
-import { ensureSelfProfile, SELF_PROFILE } from "./lib/profiles";
+import { ensureSelfProfile, panesWithProfiles, SELF_PROFILE } from "./lib/profiles";
+import { typeIntoPane, updateCommand, updateHint } from "./lib/update";
 import { sameRoomView } from "./lib/room";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
@@ -188,8 +189,11 @@ export default function App() {
           setWorkspace(session.workspace);
           nextPane.current = nextPaneNumber(session.workspace);
           setPaneProfiles(
-            Object.fromEntries(
-              paneIds(session.workspace.layout).map((id) => [id, fallbackProfile]),
+            panesWithProfiles(
+              paneIds(session.workspace.layout),
+              session.panes ?? {},
+              session.profiles,
+              fallbackProfile,
             ),
           );
         } else {
@@ -214,12 +218,13 @@ export default function App() {
       workspace,
       profiles,
       defaultProfile,
+      panes: paneProfiles,
     };
     const timer = window.setTimeout(() => {
       void sessionSave(session).catch((cause) => setError(String(cause)));
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [workspace, profiles, defaultProfile]);
+  }, [workspace, profiles, defaultProfile, paneProfiles]);
 
   // The room changes without this instance asking: someone joins, types, or the
   // transcript grows. One second is faster than a person reads and slower than
@@ -244,12 +249,16 @@ export default function App() {
     };
   }, []);
 
+  /** Splits, and says which pane appeared, or `null` if it could not. */
   const splitWith = useCallback(
-    async (direction: SplitDirection, profileId: string | null) => {
+    async (
+      direction: SplitDirection,
+      profileId: string | null,
+    ): Promise<string | null> => {
       const current = workspaceRef.current;
-      if (!current) return;
+      if (!current) return null;
       const target = current.focused ?? paneIds(current.layout)[0];
-      if (!target) return;
+      if (!target) return null;
 
       const id = `p${nextPane.current++}`;
       const chosen = profileId ?? defaultProfileRef.current ?? "default";
@@ -258,7 +267,9 @@ export default function App() {
         setWorkspace(await workspaceSplit(target, direction, id));
       } catch (cause) {
         setError(String(cause));
+        return null;
       }
+      return id;
     },
     [],
   );
@@ -285,6 +296,38 @@ export default function App() {
     setProfiles((current) => ensureSelfProfile(current, source));
 
     await splitWith("row", SELF_PROFILE);
+  }, [info, splitWith]);
+
+  /**
+   * Bring this build's source up to date, from inside the app.
+   *
+   * The line is typed into a pane rather than run behind a person's back: a pull,
+   * an install and a build are things worth watching, reading back in the
+   * scrollback, and interrupting. What each platform's shell is asked to do, and
+   * why Windows cannot finish the job while this window is open, is in
+   * `lib/update.ts`.
+   */
+  const updateSelf = useCallback(async () => {
+    const source = info?.source ?? null;
+    if (!source) {
+      setError(
+        "this build is not running from its source tree, so there is nothing to update from",
+      );
+      return;
+    }
+
+    setProfiles((current) => ensureSelfProfile(current, source));
+    const pane = await splitWith("row", SELF_PROFILE);
+    if (!pane) return;
+
+    // A pane is spawned by the view that draws it, so the command waits for the
+    // shell rather than racing it.
+    const typed = await typeIntoPane(pane, updateCommand(info?.platform ?? ""));
+    if (!typed) {
+      setError(
+        "the new pane's shell did not come up, so the update command was not run",
+      );
+    }
   }, [info, splitWith]);
 
   const closePane = useCallback(async (id: string) => {
@@ -595,6 +638,15 @@ export default function App() {
         run: () => void openSelf(),
       },
       {
+        id: "app.update",
+        title: "Update from source…",
+        group: "App",
+        hint: info?.source
+          ? updateHint(info.platform)
+          : "no source tree in this build",
+        run: () => void updateSelf(),
+      },
+      {
         id: "view.controlRoom",
         title: "Toggle the control room",
         group: "View",
@@ -665,7 +717,7 @@ export default function App() {
         title: `New pane: ${profile.name}`,
         group: "Profile",
         hint: profile.shell ?? "platform default",
-        run: () => splitWith("row", profile.id),
+        run: () => void splitWith("row", profile.id),
       });
     }
 
@@ -727,6 +779,7 @@ export default function App() {
     cycle,
     withFocusedPane,
     openSelf,
+    updateSelf,
     info,
   ]);
 

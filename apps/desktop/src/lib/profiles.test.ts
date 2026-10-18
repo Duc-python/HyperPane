@@ -7,6 +7,7 @@ import {
   formatArgs,
   formatEnv,
   freeProfileId,
+  panesWithProfiles,
   parseArgs,
   parseEnv,
   removeProfile,
@@ -164,5 +165,40 @@ describe("environment lines", () => {
 
   it("reads back in one order, so the box does not move", () => {
     expect(formatEnv({ B: "2", A: "1" })).toBe("A=1\nB=2");
+  });
+});
+
+describe("which profile each pane opens with again", () => {
+  const available = [profile("default", "Default shell"), profile("source", "HyperPane source")];
+
+  it("keeps the profile a pane was opened with", () => {
+    const map = panesWithProfiles(
+      ["p1", "p2"],
+      { p2: "source" },
+      available,
+      "default",
+    );
+
+    expect(map).toEqual({ p1: "default", p2: "source" });
+  });
+
+  it("falls back for a pane the file says nothing about", () => {
+    // A pane opened after the last save, or one from a file written before the
+    // choice was stored at all.
+    expect(panesWithProfiles(["p9"], {}, available, "default")).toEqual({
+      p9: "default",
+    });
+  });
+
+  it("falls back when the profile it names has been deleted", () => {
+    const map = panesWithProfiles(["p1"], { p1: "deleted" }, available, "default");
+
+    expect(map.p1).toBe("default");
+  });
+
+  it("says nothing about panes there are none of", () => {
+    expect(panesWithProfiles([], { p1: "source" }, available, "default")).toEqual(
+      {},
+    );
   });
 });
