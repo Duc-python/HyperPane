@@ -28,7 +28,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod client;
+pub mod host;
 pub mod net;
+
+pub use client::{Client, ClientError};
+pub use host::{Host, HostError};
 
 /// The version of this protocol. A peer that speaks another one is refused
 /// rather than guessed at.

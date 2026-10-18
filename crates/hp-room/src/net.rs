@@ -11,7 +11,9 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -27,6 +29,18 @@ pub enum NetError {
     Wire(#[from] WireError),
     #[error("a message longer than {MAX_MESSAGE} bytes arrived, and the line was cut")]
     TooLong,
+    #[error("the other end closed the connection")]
+    Closed,
+}
+
+/// The first line a participant sends, before the room has given it an id.
+///
+/// It is not a `Message`: the room decides who you are, so this is the only
+/// thing a stranger may say.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hello {
+    pub name: String,
 }
 
 /// One connection, both directions.
@@ -71,6 +85,21 @@ impl Connection {
             None => Ok(None),
             Some(line) => Ok(Some(decode(&line)?)),
         }
+    }
+
+    /// The one message a peer sends before it has an id.
+    pub fn handshake<T: DeserializeOwned>(&mut self) -> Result<T, NetError> {
+        match self.next_line()? {
+            None => Err(NetError::Closed),
+            Some(line) => Ok(decode(&line)?),
+        }
+    }
+
+    /// How long a read may block. `None` blocks until something arrives, which
+    /// is what a participant waiting for events wants.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<(), NetError> {
+        self.stream.set_read_timeout(timeout)?;
+        Ok(())
     }
 
     /// One line, refused if it is longer than the limit.

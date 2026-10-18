@@ -133,8 +133,15 @@ green (tests, clippy, typecheck, and the app actually running).
       size bounded before parsing. This is what two builds on one machine will
       talk over before QUIC arrives, and it is explicitly not a security
       boundary — identity is whatever the stream is attached to.
-- [ ] QUIC, and the host loop that accepts connections, applies messages and fans
-      out events. Until that exists the room is a library, not a feature.
+- [x] The host loop and a client, in the crate: `Host` accepts, one thread per
+      peer, applies what it sends and writes the events back; `Client` says hello
+      and listens. Effects come back through a channel, because writing into a
+      pane belongs to the app that owns the PTY. Seven tests over real loopback
+      sockets, including output that must *not* reach someone without a grant.
+- [ ] The same in the app: commands, a panel, and the hook that mirrors a pane's
+      output into the room. Until that exists the room is a library, not a
+      feature.
+- [ ] QUIC, replacing TCP once the rules have been through a real session.
 - [ ] Share pane / tab / computer in the UI, per-pane ACL.
 - [ ] Presence and follow in the UI.
 
