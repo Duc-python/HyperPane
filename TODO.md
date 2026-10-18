@@ -165,11 +165,20 @@ green (tests, clippy, typecheck, and the app actually running).
       nothing has to be looked up), signing and verification, and the pairing code
       two machines share — sixty bits of it, stretched before use, because a short
       code can be guessed from a recorded handshake.
-- [ ] Pairing over the wire, and the pinning store: a peer's key is remembered
-      the first time it is seen, and a key that changed is refused with what
-      changed. Nothing uses `hp-identity` yet.
-- [ ] QUIC for the room, with the certificate bound to the identity above. The
-      room is loopback until then.
+- [x] `hp-identity::pairing`: the four-message exchange over any stream — two ids,
+      two names, two nonces, and a proof each way, all over one transcript so
+      nothing can be reordered, relabelled or replayed. Tested over a real
+      loopback socket, including the host refusing and the guest being left with
+      nothing to accept.
+- [x] `hp-identity::peers`: the machines this one has paired with. A pinned id
+      verifies its own signatures, which is why a reconnect needs no code. A new id
+      borrowing a pinned name is reported rather than refused: a reinstalled
+      machine must be pairable again, and only a person can say which of the two
+      they meant.
+- [ ] The app still cannot pair. The dock needs a code on one side and an address
+      plus the code on the other, and `peers.json` beside `trust.json`. Until then
+      a room is loopback and unauthenticated, which the panel says.
+- [ ] QUIC for the room, with the certificate bound to the identity above.
 - [ ] Standing access password, temporary grants (≤ 7 days)
 - [ ] My computers: open a pane on another machine
 - [ ] Self-hosted relay

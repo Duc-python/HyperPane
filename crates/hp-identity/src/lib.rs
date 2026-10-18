@@ -20,6 +20,12 @@
 //!   RustCrypto family. This crate decides *what* is signed and *when* something
 //!   is trusted; the arithmetic is somebody else's, reviewed problem.
 
+pub mod pairing;
+pub mod peers;
+
+pub use pairing::{Answer, Confirmed, Offer, PairingError};
+pub use peers::{Peer, Peers, PeersError, Remembered};
+
 use std::path::Path;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -249,7 +255,47 @@ impl std::fmt::Debug for Identity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingCode(String);
 
+/// The key a pairing settled on, derived once from the code and both nonces.
+///
+/// A pairing proves itself twice, once each way, and deriving the key again for
+/// the second proof would pay the stretch twice for no extra safety. The bytes
+/// are private and the type prints as its name, so a key cannot leak through a
+/// log by accident.
+pub struct PairingKey([u8; 32]);
+
+impl std::fmt::Debug for PairingKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PairingKey")
+    }
+}
+
+impl PairingKey {
+    /// A proof over one transcript, under this key.
+    pub fn proof(&self, transcript: &[u8]) -> [u8; 32] {
+        let mut mac =
+            <Hmac<Sha256> as Mac>::new_from_slice(&self.0).expect("hmac takes a key of any length");
+        mac.update(transcript);
+        mac.finalize().into_bytes().into()
+    }
+
+    /// Whether a proof fits this transcript, compared in constant time.
+    pub fn matches(&self, transcript: &[u8], proof: &[u8]) -> bool {
+        let mut mac =
+            <Hmac<Sha256> as Mac>::new_from_slice(&self.0).expect("hmac takes a key of any length");
+        mac.update(transcript);
+        mac.verify_slice(proof).is_ok()
+    }
+}
+
 impl PairingCode {
+    /// The key for one handshake: the one place the stretch is paid.
+    ///
+    /// The salt is both machines' nonces, so the same code yields a different key
+    /// for every pairing and a recording of one cannot be replayed into another.
+    pub fn key(&self, salt: &[u8]) -> PairingKey {
+        PairingKey(self.key_with(CODE_STRETCH, salt))
+    }
+
     /// A fresh code. Sixty bits of it, from the operating system's randomness.
     pub fn generate() -> Self {
         let mut bytes = [0u8; CODE_LENGTH];
@@ -285,15 +331,6 @@ impl PairingCode {
         &self.0
     }
 
-    /// The key both sides derive from the code and the handshake's own salt.
-    ///
-    /// The salt is the nonces the two machines exchanged, so the same code
-    /// yields a different key for every handshake, and a recording of one
-    /// pairing cannot be replayed into another.
-    pub fn key(&self, salt: &[u8]) -> [u8; 32] {
-        self.key_with(CODE_STRETCH, salt)
-    }
-
     /// The same, with the cost chosen by the caller.
     ///
     /// The number of rounds is policy rather than secret, and lowering it is
@@ -308,7 +345,7 @@ impl PairingCode {
     /// What both sides send to prove they know the code, over everything said so
     /// far: swap a message and the proof does not fit it any more.
     pub fn confirm(&self, salt: &[u8], transcript: &[u8]) -> [u8; 32] {
-        self.confirm_with(CODE_STRETCH, salt, transcript)
+        self.key(salt).proof(transcript)
     }
 
     pub fn confirm_with(&self, rounds: u32, salt: &[u8], transcript: &[u8]) -> [u8; 32] {
@@ -320,7 +357,7 @@ impl PairingCode {
 
     /// Whether the other side knows the same code.
     pub fn confirms(&self, salt: &[u8], transcript: &[u8], proof: &[u8]) -> bool {
-        self.confirms_with(CODE_STRETCH, salt, transcript, proof)
+        self.key(salt).matches(transcript, proof)
     }
 
     pub fn confirms_with(&self, rounds: u32, salt: &[u8], transcript: &[u8], proof: &[u8]) -> bool {
