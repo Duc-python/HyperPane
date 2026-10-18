@@ -24,6 +24,7 @@ const INFO: AppInfo = {
   platform: "windows",
   defaultShell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
   homeDir: "C:\\Users\\ducar",
+  source: "C:\\Users\\ducar\\orca\\HyperPane",
 };
 
 const PLUGINS = {

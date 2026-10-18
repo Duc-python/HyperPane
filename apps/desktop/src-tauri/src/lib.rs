@@ -244,6 +244,10 @@ struct AppInfo {
     default_shell: String,
     /// Used by the UI to shorten a path to `~/…`.
     home_dir: Option<String>,
+    /// Where this build's source is, when it is running from a checkout. A
+    /// packaged build has none, and the difference is what decides whether
+    /// "work on HyperPane" can mean anything.
+    source: Option<String>,
 }
 
 /// The workspace currently on screen, or `null` before the first pane exists.
@@ -446,7 +450,29 @@ fn app_info() -> AppInfo {
         platform: std::env::consts::OS,
         default_shell: hp_pty::resolve_shell(),
         home_dir: home_directory(),
+        source: find_source().map(|path| path.display().to_string()),
     }
+}
+
+/// This build's source tree, if it is running from one.
+///
+/// Found by walking up from the executable until a directory holds both the
+/// workspace and the crate the app is built on. A packaged build lives in a
+/// directory that holds neither, and the walk ends: that absence is the answer,
+/// not a failure.
+fn find_source() -> Option<PathBuf> {
+    let mut directory = std::env::current_exe().ok()?;
+
+    for _ in 0..6 {
+        directory = directory.parent()?.to_path_buf();
+        if directory.join("Cargo.toml").is_file()
+            && directory.join("crates").join("hp-core").is_dir()
+        {
+            return Some(directory);
+        }
+    }
+
+    None
 }
 
 /// The user's home directory, for displaying paths as `~/…`.

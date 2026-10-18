@@ -59,6 +59,8 @@ export interface AppInfo {
   platform: string;
   defaultShell: string;
   homeDir: string | null;
+  /** Where this build's source is, when it is running from a checkout. */
+  source: string | null;
 }
 
 /** Mirrors `hp_agents::AgentSpec`. */

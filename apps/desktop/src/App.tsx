@@ -46,6 +46,7 @@ import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings
 import { shortenPath } from "./lib/paths";
 import { describeResult, openPaneAgent, type PaneAgent } from "./lib/agents";
 import { displayPaneTitle, paneRows, type PaneLive } from "./lib/panes";
+import { ensureSelfProfile, SELF_PROFILE } from "./lib/profiles";
 import { sameRoomView } from "./lib/room";
 import type { Command } from "./lib/commands";
 import { LayoutView } from "./components/LayoutView";
@@ -261,6 +262,30 @@ export default function App() {
     },
     [],
   );
+
+  /**
+   * Open a pane on this build's own source, so the app can be edited from inside
+   * the app.
+   *
+   * The directory travels in a profile rather than in a special case, so the pane
+   * is an ordinary one - same shell, same split, same close - and the profile
+   * shows up in the profile list where a person can change the shell it uses.
+   * A checkout that moved is followed: the source is where this build came from,
+   * and a stale path is worse than a profile edit.
+   */
+  const openSelf = useCallback(async () => {
+    const source = info?.source ?? null;
+    if (!source) {
+      setError(
+        "this build is not running from its source tree, so there is nothing to open",
+      );
+      return;
+    }
+
+    setProfiles((current) => ensureSelfProfile(current, source));
+
+    await splitWith("row", SELF_PROFILE);
+  }, [info, splitWith]);
 
   const closePane = useCallback(async (id: string) => {
     const current = workspaceRef.current;
@@ -561,6 +586,15 @@ export default function App() {
         run: () => setSettingsOpen(true),
       },
       {
+        id: "app.self",
+        title: "Work on HyperPane…",
+        group: "App",
+        // A chord would be noise for a command used once in a while; the hint is
+        // where this app says why something cannot be done.
+        hint: info?.source ? "opens a pane on this build's own source" : "no source tree in this build",
+        run: () => void openSelf(),
+      },
+      {
         id: "view.controlRoom",
         title: "Toggle the control room",
         group: "View",
@@ -683,7 +717,18 @@ export default function App() {
     }
 
     return list;
-  }, [profiles, agents, teams, teamRun, splitWith, closePane, cycle, withFocusedPane]);
+  }, [
+    profiles,
+    agents,
+    teams,
+    teamRun,
+    splitWith,
+    closePane,
+    cycle,
+    withFocusedPane,
+    openSelf,
+    info,
+  ]);
 
   useEffect(() => {
     commandsRef.current = commands;

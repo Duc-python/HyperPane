@@ -31,6 +31,43 @@ function slug(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** The profile id that points at this build's source, made on first use. */
+export const SELF_PROFILE = "hyperpane-source";
+
+/**
+ * The profile list with a profile that points at this build's source.
+ *
+ * Made once and then kept, because a person may change the shell it uses. The
+ * directory is the one part that is not theirs to keep: the source is where this
+ * build came from, so a checkout that moved is followed rather than remembered
+ * wrongly. Returns the list it was given when nothing needs to change, so a
+ * caller can hand it to a state setter without an edit every time.
+ */
+export function ensureSelfProfile(profiles: Profile[], source: string): Profile[] {
+  const existing = profiles.find((profile) => profile.id === SELF_PROFILE);
+
+  if (!existing) {
+    return [
+      ...profiles,
+      {
+        id: SELF_PROFILE,
+        name: "HyperPane source",
+        shell: null,
+        args: [],
+        cwd: source,
+        env: {},
+        integration: true,
+      },
+    ];
+  }
+
+  if (existing.cwd === source) return profiles;
+
+  return profiles.map((profile) =>
+    profile.id === SELF_PROFILE ? { ...profile, cwd: source } : profile,
+  );
+}
+
 /** A new profile with a name and an id that nothing else is using. */
 export function createProfile(existing: readonly Profile[]): Profile {
   const taken = existing.map((profile) => profile.id);

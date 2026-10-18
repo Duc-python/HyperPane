@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Profile } from "./ipc";
 import {
+  SELF_PROFILE,
   createProfile,
+  ensureSelfProfile,
   formatArgs,
   formatEnv,
   freeProfileId,
@@ -35,6 +37,46 @@ describe("ids", () => {
 
   it("still has an id when the name has no letters left", () => {
     expect(freeProfileId("***", [])).toBe("profile");
+  });
+});
+
+describe("the profile that points at the app's own source", () => {
+  it("is made on first use, with the source as its directory", () => {
+    const next = ensureSelfProfile([], "C:\\src\\HyperPane");
+
+    expect(next).toHaveLength(1);
+    expect(next[0]?.id).toBe(SELF_PROFILE);
+    expect(next[0]?.name).toBe("HyperPane source");
+    expect(next[0]?.cwd).toBe("C:\\src\\HyperPane");
+    // The platform's shell and the prompt hooks: it is an ordinary pane.
+    expect(next[0]?.shell).toBeNull();
+    expect(next[0]?.integration).toBe(true);
+  });
+
+  it("follows a checkout that moved, and keeps the shell someone chose", () => {
+    const edited: Profile = {
+      ...profile(SELF_PROFILE, "My HyperPane"),
+      shell: "pwsh.exe",
+      cwd: "C:\\old\\HyperPane",
+    };
+
+    const next = ensureSelfProfile([edited], "C:\\new\\HyperPane");
+
+    expect(next[0]?.cwd).toBe("C:\\new\\HyperPane");
+    expect(next[0]?.name).toBe("My HyperPane");
+    expect(next[0]?.shell).toBe("pwsh.exe");
+  });
+
+  it("changes nothing when the directory is already right", () => {
+    const existing: Profile = {
+      ...profile(SELF_PROFILE, "HyperPane source"),
+      cwd: "C:\\src\\HyperPane",
+    };
+    const list = [existing];
+
+    // The same array back: a caller can hand this to a state setter and React
+    // will not re-render for nothing.
+    expect(ensureSelfProfile(list, "C:\\src\\HyperPane")).toBe(list);
   });
 });
 

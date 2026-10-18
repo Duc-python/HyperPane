@@ -182,3 +182,27 @@ green (tests, clippy, typecheck, and the app actually running).
 - [ ] Standing access password, temporary grants (≤ 7 days)
 - [ ] My computers: open a pane on another machine
 - [ ] Self-hosted relay
+
+## P7 — the app works on itself
+
+- [x] The app knows its own source. `app_info` walks up from the executable to a
+      directory that holds both the workspace and `crates/hp-core` and reports it.
+      A packaged build finds neither and says so: the absence is the answer, not a
+      failure.
+- [x] `Work on HyperPane…` in the palette opens a pane on that source, so the app
+      can be edited by an agent running inside it, under the same worktree and
+      spawn guard as any other project. The directory travels in an ordinary
+      profile (`HyperPane source`), so the pane is a normal pane and the shell it
+      uses stays a person's choice; a checkout that moved is followed, because the
+      source is where this build came from and a stale path is worse than an edit.
+- [x] Settings shows that path with what it is for: pull, build, restart from a
+      pane opened there.
+- [ ] Self-update proper. Tauri's updater requires a signing key that must be kept
+      forever, the public key in the config, and a published endpoint carrying
+      signed artifacts. This app has no release channel, so there is nothing honest
+      to point it at — and inventing one would mean a version of "updated" that is
+      not true. Until then, updating means pulling and building the source that the
+      pane above is open on.
+- [ ] Restarting from inside the app (`tauri-plugin-process`). Harmless alone, but
+      it would read as "I updated myself" while the build is still the old one, so
+      it belongs with the signed updater, once a release channel exists.

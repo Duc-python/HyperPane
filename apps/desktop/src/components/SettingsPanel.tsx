@@ -147,6 +147,16 @@ export function SettingsPanel({
               {identity?.fingerprint ??
                 (identityProblem ? "could not be read" : "…")}
             </Row>
+            <Row
+              label="Source"
+              note={
+                info?.source
+                  ? "where this build came from: pull, build and restart from a pane opened here"
+                  : "a packaged build: there is no source tree to open, so the app cannot edit itself"
+              }
+            >
+              {info?.source ?? "none"}
+            </Row>
           </dl>
 
           <h3 className="mt-4 text-[10px] tracking-wide text-ink-faint uppercase">
