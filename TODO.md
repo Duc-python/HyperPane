@@ -234,7 +234,30 @@ green (tests, clippy, typecheck, and the app actually running).
       PBKDF2 stretch it deliberately pays (600,000 rounds). It failed on a loaded
       machine while the protocol was working perfectly. Thirty seconds now, still
       bounded so a real protocol mistake fails rather than hanging.
-- [ ] A webview reload restarts every shell. That is deliberate - on boot the app
+- [x] A webview reload restarts every shell. That is deliberate - on boot the app
       closes the leftover PTYs and lets each pane open its own, so nothing is
       orphaned - but it costs the scrollback and whatever was running. Re-attaching
       instead would need the backend to hand an existing session to a new channel.
+- [x] `Review worktrees…` shows what the app's own worktree directory holds, and
+      what each entry would cost to remove. A run that left nothing behind goes in
+      one click; a run with uncommitted work needs a second click that says so, and
+      the row states the cost in words ("1 uncommitted file would be lost;
+      agent/9aab3a6a stays"). A directory that is no longer a worktree is removed
+      only when it is empty, unless a person has answered twice. Branches are never
+      deleted - only a person deletes work - so commits stay reachable by name.
+      The path is held against the app's own directory before anything is touched,
+      and every removal is in the activity log.
+- [x] A directory that is already a worktree of a *different* repository is now
+      refused instead of reused. A branch name comes from a run's seed alone, so
+      two runs in two repositories can derive the same name, and reusing the
+      directory would have handed one checkout to both repositories.
+- [ ] Windows can refuse a removal while another process holds the directory: an
+      empty directory that can be neither deleted nor renamed, with
+
+          could not remove ...: The process cannot access the file because it is
+          being used by another process. (os error 32)
+
+      which is what the panel shows - the operating system's own words rather than
+      a guess. The usual reason is a process whose working directory is inside the
+      worktree, and this app does not force a deletion it cannot justify. A reload
+      retries once that process has gone.

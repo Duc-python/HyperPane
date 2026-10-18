@@ -571,6 +571,74 @@ fn agent_worktree(
     })
 }
 
+/// One of the app's worktrees, or a directory left where one was.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeStateView {
+    path: String,
+    /// The branch it has checked out, when it is still a worktree.
+    branch: Option<String>,
+    /// Files git reports as changed or untracked.
+    changes: usize,
+    /// Commits this branch has that the repository's main worktree does not.
+    commits: usize,
+    /// The branch `commits` is measured against, when one could be read.
+    base: Option<String>,
+    /// Entries in the directory, so an empty leftover is told from a full one.
+    entries: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreesView {
+    /// The directory the app creates worktrees in.
+    dir: String,
+    items: Vec<WorktreeStateView>,
+}
+
+/// What is in the app's worktree directory.
+///
+/// A description, not a decision: nothing here removes anything, and every entry
+/// carries what would be lost, so the choice can be made with the cost in view.
+#[tauri::command]
+fn worktrees_list(state: State<'_, AppState>) -> WorktreesView {
+    WorktreesView {
+        dir: state.worktree_dir.display().to_string(),
+        items: hp_agents::worktree::survey(&state.worktree_dir)
+            .into_iter()
+            .map(|entry| WorktreeStateView {
+                path: entry.path.display().to_string(),
+                branch: entry.branch,
+                changes: entry.changes,
+                commits: entry.commits,
+                base: entry.base,
+                entries: entry.entries,
+            })
+            .collect(),
+    }
+}
+
+/// Remove one of the app's worktrees, or a directory left where one was.
+///
+/// The path is held against the app's own worktree directory before anything is
+/// touched, so a mistake in the UI cannot reach the rest of the disk. `force` is a
+/// person's second answer: without it, a worktree with uncommitted changes and a
+/// directory still holding files are both refused.
+#[tauri::command]
+fn worktree_remove(path: String, force: bool, state: State<'_, AppState>) -> Result<(), String> {
+    hp_agents::worktree::discard(Path::new(&state.worktree_dir), Path::new(&path), force)
+        .map_err(|error| error.to_string())?;
+
+    let _ = state.audit.append(&AuditEntry::new(
+        "worktree.remove",
+        format!(
+            "removed a worktree at {path}{}",
+            if force { " (forced)" } else { "" }
+        ),
+    ));
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PaneRunState {
@@ -2140,6 +2208,8 @@ pub fn run() {
             agents_available,
             agent_launch,
             agent_worktree,
+            worktrees_list,
+            worktree_remove,
             agent_open,
             audit_path,
             plugins_list,

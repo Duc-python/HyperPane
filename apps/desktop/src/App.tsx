@@ -60,6 +60,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { PluginsPanel } from "./components/PluginsPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { WorktreesPanel } from "./components/WorktreesPanel";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { ControlRoom } from "./components/ControlRoom";
@@ -118,6 +119,7 @@ export default function App() {
   const [pluginsOpen, setPluginsOpen] = useState(false);
   /** Set while the settings panel is on screen. */
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [worktreesOpen, setWorktreesOpen] = useState(false);
   /** Whether the left rail is on screen. */
   const [sidebarOpen, setSidebarOpen] = useState(true);
   /**
@@ -637,6 +639,15 @@ export default function App() {
         run: () => setSettingsOpen(true),
       },
       {
+        id: "app.worktrees",
+        title: "Review worktrees…",
+        group: "App",
+        // The one place in the app where something on disk is deleted, so the
+        // hint says what the panel is: a list of costs, not a cleanup button.
+        hint: "what each one would cost to remove; branches are kept",
+        run: () => setWorktreesOpen(true),
+      },
+      {
         id: "app.self",
         title: "Work on HyperPane…",
         group: "App",
@@ -1066,6 +1077,13 @@ export default function App() {
           teamKey={teamRun.key}
           status={teamRun}
           onClose={() => setShowRun(false)}
+        />
+      ) : null}
+
+      {worktreesOpen ? (
+        <WorktreesPanel
+          formatPath={formatPath}
+          onClose={() => setWorktreesOpen(false)}
         />
       ) : null}
 

@@ -208,6 +208,27 @@ export interface WorktreeInfo {
   branch: string;
 }
 
+/** Mirrors the app's `WorktreeStateView`: one of the app's worktrees, described. */
+export interface WorktreeStateView {
+  path: string;
+  /** The branch it has checked out, when it is still a worktree. */
+  branch: string | null;
+  /** Files git reports as changed or untracked. */
+  changes: number;
+  /** Commits this branch has that the repository's main worktree does not. */
+  commits: number;
+  /** The branch `commits` is measured against, when one could be read. */
+  base: string | null;
+  /** Entries in the directory, so an empty leftover is told from a full one. */
+  entries: number;
+}
+
+export interface WorktreesView {
+  /** The directory the app creates worktrees in. */
+  dir: string;
+  items: WorktreeStateView[];
+}
+
 /**
  * Mirrors `hp_core::PaneAgent`: the agent a pane runs, stored so a restart can
  * bring the pane back as what it was rather than as a shell.
@@ -636,6 +657,18 @@ export const agentLaunch = (agent: string, task: string) =>
 
 export const agentWorktree = (repo: string, seed: string) =>
   invoke<WorktreeInfo>("agent_worktree", { repo, seed });
+
+/** What is in the app's own worktree directory. Nothing is removed by reading it. */
+export const worktreesList = () => invoke<WorktreesView>("worktrees_list");
+
+/**
+ * Remove one of the app's worktrees, or a directory left where one was.
+ *
+ * `force` is a person's second answer: without it, a worktree with uncommitted
+ * changes and a directory that still holds files are both refused.
+ */
+export const worktreeRemove = (path: string, force: boolean) =>
+  invoke<void>("worktree_remove", { path, force });
 
 export const paneRunState = (id: string) =>
   invoke<PaneRunState | null>("pane_run_state", { id });
