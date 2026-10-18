@@ -399,6 +399,35 @@ export const roomInput = (pane: string, data: string) =>
 
 export const roomState = () => invoke<RoomView>("room_state");
 
+/** Who this machine is: the public key, and where the private one lives. */
+export interface IdentityInfo {
+  /** The whole name, in hex. It is the key itself, not a hash of it. */
+  id: string;
+  short: string;
+  /** The same name in groups of four, for reading to somebody else. */
+  fingerprint: string;
+  path: string;
+}
+
+/** One machine this one has paired with. */
+export interface PeerInfo {
+  id: string;
+  short: string;
+  name: string;
+  pairedAtMs: number;
+  lastSeenMs: number;
+}
+
+export interface PeersView {
+  /** Where the list of trusted machines lives. */
+  path: string;
+  peers: PeerInfo[];
+}
+
+export const identityInfo = () => invoke<IdentityInfo>("identity_info");
+
+export const peersList = () => invoke<PeersView>("peers_list");
+
 export type Archetype =
   | "reviewer"
   | "pipeline"

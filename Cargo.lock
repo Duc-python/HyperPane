@@ -1737,6 +1737,7 @@ version = "0.1.0"
 dependencies = [
  "hp-agents",
  "hp-core",
+ "hp-identity",
  "hp-mcp",
  "hp-pty",
  "hp-room",

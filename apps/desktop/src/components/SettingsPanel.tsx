@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { pluginsList, type AppInfo } from "../lib/ipc";
+import {
+  identityInfo,
+  peersList,
+  pluginsList,
+  type AppInfo,
+  type IdentityInfo,
+  type PeersView,
+} from "../lib/ipc";
 import { formatChord } from "../lib/keybindings";
 
 interface SettingsPanelProps {
@@ -34,7 +41,10 @@ export function SettingsPanel({
     path: string;
     trustPath: string;
   } | null>(null);
+  const [identity, setIdentity] = useState<IdentityInfo | null>(null);
+  const [peers, setPeers] = useState<PeersView | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [identityProblem, setIdentityProblem] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +55,30 @@ export function SettingsPanel({
       .catch((cause: unknown) => {
         if (!cancelled) setProblem(String(cause));
       });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Who this machine is, and who it trusts: two answers that belong together,
+  // because a fingerprint with nobody pinned to it is only half the story. They
+  // fail apart, though: a key file that cannot be read must not hide the list of
+  // machines, and the list must not hide the key.
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.allSettled([identityInfo(), peersList()]).then(([who, trusted]) => {
+      if (cancelled) return;
+      if (who.status === "fulfilled") {
+        setIdentity(who.value);
+      } else {
+        setIdentityProblem(String(who.reason));
+      }
+      if (trusted.status === "fulfilled") {
+        setPeers(trusted.value);
+      } else {
+        setIdentityProblem((current) => current ?? String(trusted.reason));
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -106,6 +140,13 @@ export function SettingsPanel({
               {info?.defaultShell ?? "…"}
             </Row>
             <Row label="Home">{info?.homeDir ?? "not known"}</Row>
+            <Row
+              label="Identity"
+              note="this machine's name: the key itself, in groups of four. Read it to somebody else and compare — a machine that shows a different one is a different machine."
+            >
+              {identity?.fingerprint ??
+                (identityProblem ? "could not be read" : "…")}
+            </Row>
           </dl>
 
           <h3 className="mt-4 text-[10px] tracking-wide text-ink-faint uppercase">
@@ -124,7 +165,49 @@ export function SettingsPanel({
             <Row label="Approvals" note="the command, arguments and tools that were read and accepted">
               {plugins?.trustPath ?? (problem ? "could not be read" : "reading…")}
             </Row>
+            <Row label="Identity file" note="this machine's private key; the account is what protects it">
+              {identity?.path ?? (identityProblem ? "could not be read" : "reading…")}
+            </Row>
+            <Row label="Trusted machines" note="who this machine has paired with">
+              {peers?.path ?? (identityProblem ? "could not be read" : "reading…")}
+            </Row>
           </dl>
+
+          <h3 className="mt-4 text-[10px] tracking-wide text-ink-faint uppercase">
+            Trusted machines
+          </h3>
+          {identityProblem ? (
+            <p className="mt-2 rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[11px] text-warn">
+              this machine's own records could not be read: {identityProblem}
+            </p>
+          ) : null}
+          {peers === null ? (
+            <p className="mt-1 text-[11px] text-ink-faint">reading…</p>
+          ) : peers.peers.length === 0 ? (
+            <p className="mt-1 text-[11px] leading-5 text-ink-faint">
+              None yet. Pairing is the next step: one machine shows a code, the
+              other types it, and the name above is remembered here. Until then a
+              room is loopback and unauthenticated, and nothing on that list is
+              trusted.
+            </p>
+          ) : (
+            <ul className="mt-1">
+              {peers.peers.map((peer) => (
+                <li
+                  key={peer.id}
+                  className="flex items-baseline gap-2 border-b border-line/40 py-1.5 last:border-b-0"
+                >
+                  <span className="text-[11px] text-ink">{peer.name}</span>
+                  <span className="font-mono text-[10px] text-ink-faint">
+                    {peer.short}
+                  </span>
+                  <span className="ml-auto text-[10px] text-ink-faint">
+                    paired
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {problem ? (
             <p className="mt-2 rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[11px] text-warn">

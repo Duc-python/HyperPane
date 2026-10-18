@@ -155,6 +155,9 @@ struct AppState {
     plugins_path: PathBuf,
     /// Where the record of what has been approved lives.
     trust_path: PathBuf,
+    /// This machine's key pair, and the machines it has paired with.
+    identity_path: PathBuf,
+    peers_path: PathBuf,
     plugins: Arc<Mutex<Option<hp_mcp::Host>>>,
     /// The room this instance is hosting, if it is hosting one.
     room_host: Arc<Mutex<Option<Host>>>,
@@ -172,6 +175,8 @@ struct Paths {
     findings: PathBuf,
     plugins: PathBuf,
     trust: PathBuf,
+    identity: PathBuf,
+    peers: PathBuf,
 }
 
 impl Paths {
@@ -182,6 +187,8 @@ impl Paths {
             findings: directory.join("findings"),
             plugins: directory.join("plugins.json"),
             trust: directory.join("trust.json"),
+            identity: directory.join("identity.json"),
+            peers: directory.join("peers.json"),
         }
     }
 }
@@ -207,6 +214,8 @@ impl AppState {
             workspace: Mutex::new(workspace),
             plugins_path: paths.plugins,
             trust_path: paths.trust,
+            identity_path: paths.identity,
+            peers_path: paths.peers,
             plugins: Arc::new(Mutex::new(None)),
             room_host: Arc::new(Mutex::new(None)),
             room_visit: Arc::new(Mutex::new(None)),
@@ -1947,6 +1956,93 @@ fn with_host(state: &AppState, work: impl FnOnce(&hp_room::Host)) {
     }
 }
 
+/// This machine's name, in the form a person can compare out loud.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityInfo {
+    /// The whole name: the public key, in hex.
+    id: String,
+    short: String,
+    /// The same name in groups of four, for reading to somebody else.
+    fingerprint: String,
+    path: String,
+}
+
+/// One machine this one has paired with.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerInfo {
+    id: String,
+    short: String,
+    name: String,
+    paired_at_ms: u128,
+    last_seen_ms: u128,
+}
+
+/// The list of trusted machines, and where it lives.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PeersView {
+    path: String,
+    peers: Vec<PeerInfo>,
+}
+
+/// Who this machine is.
+///
+/// The key is made on first use, so the answer to "what is my name" exists before
+/// anybody has needed it for anything.
+#[tauri::command]
+fn identity_info(state: State<'_, AppState>) -> Result<IdentityInfo, String> {
+    let identity = hp_identity::Identity::load_or_create(&state.identity_path)
+        .map_err(|error| error.to_string())?;
+    let id = identity.id();
+
+    Ok(IdentityInfo {
+        id: id.as_str().to_string(),
+        short: id.short().to_string(),
+        fingerprint: id.fingerprint(),
+        path: state.identity_path.display().to_string(),
+    })
+}
+
+/// The machines this one has paired with.
+///
+/// The file is created empty the first time, so a person can open it and see that
+/// the list is real rather than that it is missing.
+#[tauri::command]
+fn peers_list(state: State<'_, AppState>) -> Result<PeersView, String> {
+    let peers = load_peers(&state.peers_path)?;
+
+    Ok(PeersView {
+        path: state.peers_path.display().to_string(),
+        peers: peers
+            .list()
+            .into_iter()
+            .map(|peer| PeerInfo {
+                id: peer.id.as_str().to_string(),
+                short: peer.short().to_string(),
+                name: peer.name.clone(),
+                paired_at_ms: peer.paired_at_ms,
+                last_seen_ms: peer.last_seen_ms,
+            })
+            .collect(),
+    })
+}
+
+fn load_peers(path: &Path) -> Result<hp_identity::Peers, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, hp_identity::peers::EMPTY_PEERS)
+                .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+            hp_identity::peers::EMPTY_PEERS.to_string()
+        }
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+    };
+
+    hp_identity::Peers::parse(&text).map_err(|error| error.to_string())
+}
+
 /// Where a pane's shell last said it was, if it reports that at all.
 #[tauri::command]
 fn pane_cwd(id: String, state: State<'_, AppState>) -> Option<String> {
@@ -2036,6 +2132,8 @@ pub fn run() {
             room_follow,
             room_input,
             room_state,
+            identity_info,
+            peers_list,
             teams_list,
             team_plan,
             team_start,
