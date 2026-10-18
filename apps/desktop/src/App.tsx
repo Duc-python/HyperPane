@@ -44,7 +44,12 @@ import {
 } from "./lib/ipc";
 import { chordForCommand, commandForEvent, formatChord } from "./lib/keybindings";
 import { shortenPath } from "./lib/paths";
-import { describeResult, openPaneAgent, type PaneAgent } from "./lib/agents";
+import {
+  describeResult,
+  openPaneAgent,
+  restoredAgents,
+  type PaneAgent,
+} from "./lib/agents";
 import { displayPaneTitle, paneRows, type PaneLive } from "./lib/panes";
 import { ensureSelfProfile, panesWithProfiles, SELF_PROFILE } from "./lib/profiles";
 import { typeIntoPane, updateCommand, updateHint } from "./lib/update";
@@ -188,14 +193,16 @@ export default function App() {
         if (session.workspace) {
           setWorkspace(session.workspace);
           nextPane.current = nextPaneNumber(session.workspace);
+          const panes = paneIds(session.workspace.layout);
           setPaneProfiles(
             panesWithProfiles(
-              paneIds(session.workspace.layout),
+              panes,
               session.panes ?? {},
               session.profiles,
               fallbackProfile,
             ),
           );
+          setPaneAgents(restoredAgents(panes, session.agents ?? {}));
         } else {
           nextPane.current = 2;
           setWorkspace(await workspaceInit("p1"));
@@ -219,12 +226,13 @@ export default function App() {
       profiles,
       defaultProfile,
       panes: paneProfiles,
+      agents: paneAgents,
     };
     const timer = window.setTimeout(() => {
       void sessionSave(session).catch((cause) => setError(String(cause)));
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [workspace, profiles, defaultProfile, paneProfiles]);
+  }, [workspace, profiles, defaultProfile, paneProfiles, paneAgents]);
 
   // The room changes without this instance asking: someone joins, types, or the
   // transcript grows. One second is faster than a person reads and slower than

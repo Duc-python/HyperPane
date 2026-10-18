@@ -222,10 +222,18 @@ green (tests, clippy, typecheck, and the app actually running).
       mapping beside the layout, and an entry is dropped when its pane is gone. A
       pane the file does not mention opens with the default profile, as does one
       whose profile has since been deleted - a pane has to open with something.
-- [ ] An *agent* pane still comes back as a shell. The session stores the profile,
-      not the agent, so a restart forgets which CLI a pane was running (and which
-      worktree it was confined to). It needs the catalogue id and the worktree
-      stored beside the profile.
+- [x] An agent pane comes back as the agent. The launch itself is stored beside
+      the profile - program, arguments, and the worktree it was confined to - so a
+      reload brings back the same CLI in the same directory, with its branch still
+      shown, rather than a shell where a run used to be. The task is deliberately
+      *not* stored: sending an order again to an agent nobody is watching is a
+      decision, not a default, so a restored run comes back waiting for one. A
+      stored launch is dropped as soon as its pane is gone, by the session file and
+      again by the app, so a later split that reuses a pane id cannot inherit it.
+- [x] The pairing test's read timeout was five seconds, which is less than the
+      PBKDF2 stretch it deliberately pays (600,000 rounds). It failed on a loaded
+      machine while the protocol was working perfectly. Thirty seconds now, still
+      bounded so a real protocol mistake fails rather than hanging.
 - [ ] A webview reload restarts every shell. That is deliberate - on boot the app
       closes the leftover PTYs and lets each pane open its own, so nothing is
       orphaned - but it costs the scrollback and whatever was running. Re-attaching

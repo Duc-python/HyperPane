@@ -9,6 +9,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
+/// How long a side waits for the other before calling the exchange stuck.
+///
+/// Generous on purpose. One side stretches a sixty-bit code with 600,000 rounds
+/// of PBKDF2 by design - that is seconds of work - and a five second wait made
+/// this test fail on a loaded machine while the protocol was working perfectly.
+/// It is still bounded, so a real protocol mistake fails instead of hanging.
+const PATIENCE: Duration = Duration::from_secs(30);
+
 use hp_identity::pairing::{self, Answer, Confirmed, Offer};
 use hp_identity::{Identity, PairingCode, Peers};
 
@@ -43,7 +51,7 @@ fn two_machines_pair_and_both_pin_the_other() {
         let mut reading = BufReader::new(stream);
         reading
             .get_ref()
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(PATIENCE))
             .expect("a timeout");
 
         let offer = pairing::offer(&identity, "desk");
@@ -66,7 +74,7 @@ fn two_machines_pair_and_both_pin_the_other() {
     let mut reading = BufReader::new(stream);
     reading
         .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(PATIENCE))
         .expect("a timeout");
 
     let offer: Offer = receive(&mut reading).expect("the host offered");
@@ -121,7 +129,7 @@ fn a_wrong_code_is_refused_by_the_host_and_nothing_is_pinned() {
     let mut reading = BufReader::new(stream);
     reading
         .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(PATIENCE))
         .expect("a timeout");
 
     let guest = Identity::generate();

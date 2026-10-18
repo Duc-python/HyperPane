@@ -159,6 +159,8 @@ export interface Session {
   defaultProfile: string | null;
   /** Which profile each pane opened with, by pane id. */
   panes: Record<string, string>;
+  /** What each agent pane runs, by pane id. */
+  agents: Record<string, PaneAgent>;
 }
 
 /** Mirrors `hp_agents::result::RunResult`. */
@@ -204,6 +206,24 @@ export interface AgentLaunch {
 export interface WorktreeInfo {
   path: string;
   branch: string;
+}
+
+/**
+ * Mirrors `hp_core::PaneAgent`: the agent a pane runs, stored so a restart can
+ * bring the pane back as what it was rather than as a shell.
+ */
+export interface PaneAgent {
+  /** Catalogue id, so a pane can say which agent this is. */
+  id: string;
+  label: string;
+  program: string;
+  args: string[];
+  /** The task had to be typed in once the agent was up. */
+  needsPaste: boolean;
+  /** The directory this run is confined to, when it has one. */
+  cwd: string | null;
+  /** The branch of that directory, when it is a worktree. */
+  branch: string | null;
 }
 
 /** What the app needs to open one agent run. */

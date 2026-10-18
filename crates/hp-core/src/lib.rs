@@ -308,6 +308,30 @@ impl Profile {
     }
 }
 
+/// What a pane runs, when it runs an agent rather than a shell.
+///
+/// Stored as the launch itself rather than as a catalogue id and a lookup: a pane
+/// comes back running what it ran, even if the catalogue's idea of that CLI has
+/// moved on since, and a CLI that is no longer installed fails in the pane and
+/// says so instead of the pane quietly becoming something else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneAgent {
+    /// Catalogue id, so a pane can say which agent this is.
+    pub id: String,
+    pub label: String,
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The task had to be typed in once the agent was up.
+    #[serde(default)]
+    pub needs_paste: bool,
+    /// The directory this run is confined to, when it has one.
+    pub cwd: Option<String>,
+    /// The branch of that directory, when it is a worktree.
+    pub branch: Option<String>,
+}
+
 /// Bumped when a field changes meaning, so an old file is refused rather than
 /// silently half-read.
 pub const SESSION_VERSION: u32 = 1;
@@ -331,6 +355,13 @@ pub struct Session {
     /// file written before panes were remembered - opens with the default profile.
     #[serde(default)]
     pub panes: BTreeMap<PaneId, String>,
+    /// What each agent pane runs, by pane id. A pane that ran a CLI has to come
+    /// back running it: a shell in its place would look like the same pane and
+    /// quietly be a different thing. The task itself is deliberately not stored -
+    /// sending an order again to an agent nobody is watching is a decision, not a
+    /// default - so a restored run waits for one.
+    #[serde(default)]
+    pub agents: BTreeMap<PaneId, PaneAgent>,
 }
 
 impl Default for Session {
@@ -347,6 +378,7 @@ impl Session {
             profiles: vec![Profile::default_shell()],
             default_profile: Some("default".to_string()),
             panes: BTreeMap::new(),
+            agents: BTreeMap::new(),
         }
     }
 
@@ -397,6 +429,7 @@ impl Session {
             .map(|workspace| workspace.layout.pane_ids())
             .unwrap_or_default();
         self.panes.retain(|pane, _| live.contains(pane));
+        self.agents.retain(|pane, _| live.contains(pane));
         self
     }
 }
@@ -604,6 +637,56 @@ mod tests {
 
         let session: Session = serde_json::from_str(old).expect("deserialize");
         assert!(session.panes.is_empty());
+        assert!(session.agents.is_empty());
+    }
+
+    fn pane_agent() -> PaneAgent {
+        PaneAgent {
+            id: "opencode".into(),
+            label: "opencode".into(),
+            program: "opencode".into(),
+            args: vec!["--foo".into()],
+            needs_paste: true,
+            cwd: Some("/repo/.worktrees/run".into()),
+            branch: Some("hp/run".into()),
+        }
+    }
+
+    #[test]
+    fn a_pane_remembers_the_agent_it_runs() {
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace {
+            id: "w".into(),
+            name: "w".into(),
+            layout: LayoutNode::leaf("p1"),
+            focused: Some("p1".into()),
+            active: true,
+        });
+        session.agents.insert("p1".into(), pane_agent());
+
+        let json = serde_json::to_string(&session).expect("serialize");
+        let back: Session = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.agents.get("p1"), Some(&pane_agent()));
+    }
+
+    #[test]
+    fn normalise_forgets_agents_whose_panes_are_gone() {
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace {
+            id: "w".into(),
+            name: "w".into(),
+            layout: LayoutNode::leaf("p1"),
+            focused: Some("p1".into()),
+            active: true,
+        });
+        session.agents.insert("p1".into(), pane_agent());
+        session.agents.insert("p2".into(), pane_agent());
+
+        let repaired = session.normalise();
+
+        assert!(repaired.agents.contains_key("p1"));
+        assert!(!repaired.agents.contains_key("p2"));
     }
 
     #[test]

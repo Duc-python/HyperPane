@@ -1,17 +1,29 @@
-import { agentOpen, type AgentInfo, type RunResult } from "./ipc";
+import { agentOpen, type AgentInfo, type PaneAgent, type RunResult } from "./ipc";
 
-/** Everything a pane needs to start an agent. */
-export interface PaneAgent {
-  id: string;
-  label: string;
-  program: string;
-  args: string[];
-  /** The task has to be typed in once the agent is up. */
-  needsPaste: boolean;
-  /** The directory this run is confined to, when it has one. */
-  cwd: string | null;
-  /** The branch of that directory, when it is a worktree. */
-  branch: string | null;
+/**
+ * Everything a pane needs to start an agent: the stored launch itself, not a
+ * second shape that has to be kept in step with the file it is written to.
+ */
+export type { PaneAgent };
+
+/**
+ * The agents to bring back, for the panes that are still there.
+ *
+ * The session file applies the same rule when it loads, and it is applied again
+ * here because the layout is the authority on which panes exist right now: a
+ * launch kept for a pane id that is gone could come back on a later split that
+ * happened to reuse the id, which would put someone else's run in a new pane.
+ */
+export function restoredAgents(
+  panes: readonly string[],
+  stored: Readonly<Record<string, PaneAgent>>,
+): Record<string, PaneAgent> {
+  const out: Record<string, PaneAgent> = {};
+  for (const pane of panes) {
+    const launch = stored[pane];
+    if (launch) out[pane] = launch;
+  }
+  return out;
 }
 
 /** Ask the app to open a run, and turn its answer into pane arguments. */
