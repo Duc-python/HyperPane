@@ -114,9 +114,14 @@ green (tests, clippy, typecheck, and the app actually running).
       Worth doing when the app imports servers from somewhere else - a link, a
       registry, a shared config - which is also when SEP-1024's consent flow stops
       being satisfied by reading your own file.
-- [ ] A frontend test harness. The activity log is what stands in for one today,
-      and the pane-session bug was found by reading it — which is a poor
-      substitute for a test that fails.
+- [x] A frontend test harness: vitest, jsdom and testing-library, wired into
+      `scripts/check.ps1`. The first tests cover the rules that are easy to get
+      silently wrong — chord matching, profile ids, argument and environment
+      parsing, palette ranking — and two panels, including the consent step: an
+      unapproved command offers "run it", approving asks the app to approve, and
+      a changed tool list has to be accepted. It found a real defect on its first
+      run: "accept it" called `plugins_open`, so a rewritten tool list could
+      never be accepted.
 
 ## P5 — control rooms
 

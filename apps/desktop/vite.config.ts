@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -20,5 +21,13 @@ export default defineConfig({
     target: "es2022",
     sourcemap: true,
     minify: "esbuild",
+  },
+  test: {
+    // Components are the point, so there is a document. The terminal is not
+    // rendered in these tests: `TerminalPane` talks to a real PTY through Tauri,
+    // and what is worth testing around it is the rules, not the webview.
+    environment: "jsdom",
+    include: ["src/**/*.test.{ts,tsx}"],
+    setupFiles: ["src/test-setup.ts"],
   },
 });

@@ -38,14 +38,18 @@ export function PluginsPanel({ onClose }: { onClose: () => void }) {
     load(pluginsList);
   }, []);
 
-  const start = (server: { id: string; approved: boolean }) => {
-    const id = server.id;
+  /**
+   * Open, or approve and open.
+   *
+   * `approve` is separate from the declaration being approved because accepting
+   * a changed tool list is an approval too: the declaration did not move, but
+   * what the server says about itself did.
+   */
+  const run = (id: string, approve: boolean) => {
     setBusy(id);
     setError(null);
-    // A command nobody has read is not started: approving it is what starts it,
-    // so that the thing showing the exact command is the thing running it.
-    const run = server.approved ? pluginsOpen : pluginsApprove;
-    void run(id)
+    const call = approve ? pluginsApprove : pluginsOpen;
+    void call(id)
       .then((next) => {
         setView(next);
         setOpenId(id);
@@ -181,7 +185,7 @@ export function PluginsPanel({ onClose }: { onClose: () => void }) {
                 <button
                   type="button"
                   disabled={!server.enabled || busy !== null}
-                  onClick={() => start(server)}
+                  onClick={() => run(server.id, !server.approved)}
                   className="ml-auto shrink-0 rounded border border-line px-2 py-0.5 text-[10px] text-ink-muted transition-colors hover:border-line-strong hover:text-ink disabled:pointer-events-none disabled:opacity-35"
                 >
                   {busy === server.id
@@ -217,7 +221,7 @@ export function PluginsPanel({ onClose }: { onClose: () => void }) {
                   <span>the tool list moved: {server.toolChangeNote}</span>
                   <button
                     type="button"
-                    onClick={() => start(server)}
+                    onClick={() => run(server.id, true)}
                     className="ml-auto shrink-0 rounded border border-warn/60 px-1.5 py-0.5 transition-colors hover:bg-warn/20"
                   >
                     accept it

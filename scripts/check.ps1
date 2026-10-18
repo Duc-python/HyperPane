@@ -47,6 +47,11 @@ Invoke-Check "web typecheck" {
     pnpm --filter @hyperpane/desktop typecheck 2>&1 | Select-Object -Last 5
 }
 
+Invoke-Check "web tests" {
+    pnpm --filter @hyperpane/desktop test 2>&1 |
+        Select-String -Pattern "Test Files|Tests |FAIL|×" | Select-Object -Last 6
+}
+
 Invoke-Check "web build" {
     pnpm --filter @hyperpane/desktop build 2>&1 | Select-Object -Last 5
 }
