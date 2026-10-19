@@ -7,7 +7,7 @@
  * once, here, and the components only decide where to put it.
  */
 
-import type { RunPhase } from "./ipc";
+import { containsPane, type LayoutNode, type RunPhase } from "./ipc";
 import type { PaneSnapshot } from "./paneRuntime";
 
 /** Everything a pane's view has reported about itself. */
@@ -116,4 +116,24 @@ export function paneRows(options: {
       focused: options.focused === id,
     };
   });
+}
+
+/**
+ * Sessions the app still has that no pane on screen is using.
+ *
+ * A rebuilt interface brings its panes back, and each of them reconnects to the
+ * shell it was drawing, so the only thing left over is a session with no pane:
+ * one closed while the window was away, or a layout that no longer mentions it.
+ * Those are the sessions to end - closing the others is what used to restart every
+ * shell on a reload, taking the scrollback and whatever was running with it.
+ *
+ * With no layout at all there is nothing to reconnect to, and every session is
+ * somebody's leftovers.
+ */
+export function orphanPanes(
+  live: readonly string[],
+  layout: LayoutNode | null,
+): string[] {
+  if (!layout) return [...live];
+  return live.filter((id) => !containsPane(layout, id));
 }

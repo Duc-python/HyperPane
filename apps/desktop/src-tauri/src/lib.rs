@@ -365,10 +365,29 @@ fn pane_spawn(
         );
     }
 
+    state
+        .panes
+        .spawn(spec, pane_sink(&state, pane_id, on_event))
+        .map_err(|e| e.to_string())?;
+    let _ = state
+        .audit
+        .append(&AuditEntry::new("pane.open", "opened a pane").for_pane(audit_id));
+    Ok(())
+}
+
+/// The sink every pane's events go through.
+///
+/// One definition, because the same three things happen to a pane's output whoever
+/// asked for the pane: the run tracker reads a child's report from the stream it
+/// already writes, the room mirror sends what a shared pane prints, and the last
+/// directory the shell reported is kept for a worktree that needs somewhere to fork
+/// from. A view that attaches later has to get all three, or a reconnection would
+/// quietly lose what an opening had.
+fn pane_sink(state: &AppState, pane_id: String, on_event: Channel<PtyEvent>) -> EventSink {
     let runs = Arc::clone(&state.runs);
     let directories = Arc::clone(&state.directories);
     let rooms = Arc::clone(&state.room_host);
-    let sink: EventSink = Arc::new(move |event| {
+    Arc::new(move |event| {
         // A child's report is read from the stream it already writes to; no
         // extra channel is needed, and the terminal still receives every byte.
         {
@@ -402,12 +421,28 @@ fn pane_spawn(
         }
         // A closed window means the webview is gone; dropping the event is fine.
         let _ = on_event.send(event);
-    });
-    state.panes.spawn(spec, sink).map_err(|e| e.to_string())?;
-    let _ = state
-        .audit
-        .append(&AuditEntry::new("pane.open", "opened a pane").for_pane(audit_id));
-    Ok(())
+    })
+}
+
+/// Hand a pane that is still running to a view that has just been built.
+///
+/// A view can be rebuilt while the shell it draws keeps running - a webview reload
+/// does exactly that - and ending the shell instead would cost the person their
+/// scrollback and whatever was in flight. The pane is given back its own recent
+/// output, in order, and then keeps streaming to the new view. A pane that is not
+/// there is not an error to hide: the caller opens one instead, which is what the
+/// error means.
+#[tauri::command]
+fn pane_attach(
+    id: String,
+    on_event: Channel<PtyEvent>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let sink = pane_sink(&state, id.clone(), on_event);
+    state
+        .panes
+        .attach(&id, sink)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2199,6 +2234,7 @@ pub fn run() {
             workspace_cycle_focus,
             workspace_set_ratio,
             pane_spawn,
+            pane_attach,
             pane_write,
             pane_resize,
             pane_close,

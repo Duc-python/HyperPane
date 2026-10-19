@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   displayPaneTitle,
+  orphanPanes,
   paneRows,
   paneTone,
   titleLooksLikeProgramPath,
   type PaneLive,
 } from "./panes";
+import type { LayoutNode } from "./ipc";
 import type { PaneSnapshot } from "./paneRuntime";
 
 function snapshot(overrides: Partial<PaneSnapshot> = {}): PaneSnapshot {
@@ -110,5 +112,35 @@ describe("a layout as rows", () => {
       fallback: () => "shell",
     });
     expect(rows[0]?.cwd).toBe("C:\\work");
+  });
+});
+
+describe("sessions left over by a rebuilt interface", () => {
+  const split: LayoutNode = {
+    type: "split",
+    direction: "row",
+    ratio: 0.5,
+    first: { type: "leaf", pane: "p1" },
+    second: { type: "leaf", pane: "p2" },
+  };
+
+  it("keeps the sessions its panes are still using", () => {
+    // The whole point of the reconnect: these shells are alive and the panes on
+    // screen are about to attach to them, so closing them would restart work
+    // that never stopped.
+    expect(orphanPanes(["p1", "p2"], split)).toEqual([]);
+  });
+
+  it("closes a session no pane is using any more", () => {
+    expect(orphanPanes(["p1", "p2", "p3"], split)).toEqual(["p3"]);
+  });
+
+  it("closes a session whose pane the layout has forgotten", () => {
+    const narrower: LayoutNode = { type: "leaf", pane: "p2" };
+    expect(orphanPanes(["p1", "p2"], narrower)).toEqual(["p1"]);
+  });
+
+  it("has nothing to reconnect to without a workspace", () => {
+    expect(orphanPanes(["p1", "p2"], null)).toEqual(["p1", "p2"]);
   });
 });

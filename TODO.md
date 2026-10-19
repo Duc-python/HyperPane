@@ -234,10 +234,20 @@ green (tests, clippy, typecheck, and the app actually running).
       PBKDF2 stretch it deliberately pays (600,000 rounds). It failed on a loaded
       machine while the protocol was working perfectly. Thirty seconds now, still
       bounded so a real protocol mistake fails rather than hanging.
-- [x] A webview reload restarts every shell. That is deliberate - on boot the app
-      closes the leftover PTYs and lets each pane open its own, so nothing is
-      orphaned - but it costs the scrollback and whatever was running. Re-attaching
-      instead would need the backend to hand an existing session to a new channel.
+- [x] A webview reload reconnects instead of restarting. Every event a pane emits
+      now passes through one stream that keeps the last half-megabyte of output,
+      and `pane_attach` hands that stream to a view that has just been built: the
+      history first, then everything new, in order, under one lock, so the window
+      cannot show an event twice or miss one. A reload therefore brings back the
+      pane's own screen and leaves whatever was running running. Boot closes only a
+      session no pane claims (`orphanPanes`) - the leftover of a pane that was
+      closed while the window was away - which is the part of the old behaviour
+      worth keeping. Verified in the running app: a pane ticking once a second came
+      back at the same count with the same process id, its prompt and scrollback
+      replayed, no `pane.close` or `pane.open` in the activity log, and a split
+      after the reload still opened a *fresh* shell. The cap is honest: half a
+      megabyte of output returns; scrollback older than that was the terminal's,
+      and the reload took it.
 - [x] `Review worktrees…` shows what the app's own worktree directory holds, and
       what each entry would cost to remove. A run that left nothing behind goes in
       one click; a run with uncommitted work needs a second click that says so, and

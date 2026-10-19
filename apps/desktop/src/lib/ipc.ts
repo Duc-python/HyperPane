@@ -128,6 +128,23 @@ export async function paneSpawn(
   return channel;
 }
 
+/**
+ * Hand a pane that is still running to this view.
+ *
+ * The app answers with the pane's own recent output, in order, before anything
+ * new arrives, so a view that was rebuilt shows the pane rather than an empty
+ * box. A pane that is not there is refused: the caller opens one instead.
+ */
+export async function paneAttach(
+  id: string,
+  onEvent: (event: PtyEvent) => void,
+): Promise<Channel<PtyEvent>> {
+  const channel = new Channel<PtyEvent>();
+  channel.onmessage = onEvent;
+  await invoke<void>("pane_attach", { id, onEvent: channel });
+  return channel;
+}
+
 /** Pane ids of a layout, in visual order. */
 export function paneIds(node: LayoutNode): string[] {
   if (node.type === "leaf") return [node.pane];

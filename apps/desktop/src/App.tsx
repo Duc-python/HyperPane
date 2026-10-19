@@ -50,7 +50,7 @@ import {
   restoredAgents,
   type PaneAgent,
 } from "./lib/agents";
-import { displayPaneTitle, paneRows, type PaneLive } from "./lib/panes";
+import { displayPaneTitle, orphanPanes, paneRows, type PaneLive } from "./lib/panes";
 import { ensureSelfProfile, panesWithProfiles, SELF_PROFILE } from "./lib/profiles";
 import { typeIntoPane, updateCommand, updateHint } from "./lib/update";
 import { sameRoomView } from "./lib/room";
@@ -183,10 +183,13 @@ export default function App() {
         setSessionFile(await sessionPath().catch(() => null));
         if (cancelled) return;
 
-        // A webview reload leaves the previous PTYs alive in Rust. Every pane
-        // on screen is about to be re-created from the layout, so close the
-        // leftovers first and let each pane open its own shell.
-        const stale = await paneList();
+        // A view that comes back reconnects to the shells that are still running,
+        // so only a session no pane is using is closed here: one whose pane was
+        // closed while the window was away, or one the layout has forgotten.
+        const stale = orphanPanes(
+          await paneList(),
+          session.workspace?.layout ?? null,
+        );
         await Promise.all(stale.map((id) => paneClose(id).catch(() => undefined)));
         if (cancelled) return;
 

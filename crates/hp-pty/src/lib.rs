@@ -7,7 +7,7 @@
 //! Platform behaviour is delegated to `portable-pty`: ConPTY on Windows,
 //! `openpty` elsewhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::thread;
@@ -147,6 +147,71 @@ fn which(program: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// How much of a pane's output is kept for the next view that asks.
+///
+/// A view can be rebuilt without the shell being touched - a webview reload does
+/// exactly that - and the terminal that comes back should show what was on it
+/// rather than an empty box. Half a megabyte is far more than a screenful and far
+/// less than a running build prints.
+const HISTORY_BYTES: usize = 512 * 1024;
+
+/// A backstop for events that carry no bytes, so a chatty prompt cannot grow the
+/// history without bound either.
+const HISTORY_EVENTS: usize = 4096;
+
+/// What a pane has said lately, and who is listening now.
+///
+/// Every event goes through here instead of straight to a sink, which is what lets
+/// a second view attach: it is handed what has already happened and then keeps
+/// receiving, in order, with nothing dropped in between.
+#[derive(Default)]
+struct EventStream {
+    sink: Option<EventSink>,
+    history: VecDeque<PtyEvent>,
+    /// Bytes of output in `history`, so the cap is a size rather than a count.
+    bytes: usize,
+}
+
+impl EventStream {
+    fn push(&mut self, event: PtyEvent) {
+        if let PtyEvent::Data { chunk } = &event {
+            self.bytes += chunk.len();
+        }
+        self.history.push_back(event.clone());
+
+        while self.bytes > HISTORY_BYTES || self.history.len() > HISTORY_EVENTS {
+            match self.history.pop_front() {
+                Some(PtyEvent::Data { chunk }) => {
+                    self.bytes = self.bytes.saturating_sub(chunk.len())
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+
+        if let Some(sink) = &self.sink {
+            sink(event);
+        }
+    }
+
+    /// Hand the history to a new listener, then keep sending it everything.
+    ///
+    /// Done under one lock, and `push` takes the same one, so the new view cannot
+    /// see an event twice or miss one: everything before this call arrives as
+    /// history, everything after it arrives as output.
+    fn attach(&mut self, sink: EventSink) {
+        for event in &self.history {
+            sink(event.clone());
+        }
+        self.sink = Some(sink);
+    }
+}
+
+/// Push one event into a pane's stream, whoever is listening.
+fn push(stream: &Arc<Mutex<EventStream>>, event: PtyEvent) {
+    stream.lock().push(event);
+}
+
 struct PaneSession {
     /// Kept alive so the master side of the PTY is not dropped while the child
     /// runs. Dropping it closes the terminal, which is why `drop` takes it
@@ -156,6 +221,8 @@ struct PaneSession {
     killer: Box<dyn ChildKiller + Send + Sync>,
     reader: Option<thread::JoinHandle<()>>,
     waiter: Option<thread::JoinHandle<()>>,
+    /// Output and reports, kept for whoever attaches next.
+    stream: Arc<Mutex<EventStream>>,
 }
 
 impl Drop for PaneSession {
@@ -260,7 +327,13 @@ impl PaneManager {
             .take_writer()
             .map_err(|e| PtyError::Backend(e.to_string()))?;
 
-        let reader_sink = Arc::clone(&sink);
+        // Every event goes through the stream rather than straight to the sink, so
+        // a view that attaches later - a rebuilt interface, say - is given what it
+        // missed instead of finding a shell with nothing on screen.
+        let stream = Arc::new(Mutex::new(EventStream::default()));
+        stream.lock().attach(sink);
+
+        let reader_stream = Arc::clone(&stream);
         let reader_handle = thread::Builder::new()
             .name(format!("hp-pty-read-{}", spec.id))
             .spawn(move || {
@@ -280,7 +353,7 @@ impl PaneManager {
                             // replacing it: the terminal still needs the bytes
                             // it was sent.
                             if let Some(path) = directories.push(&chunk) {
-                                reader_sink(PtyEvent::Cwd { path });
+                                push(&reader_stream, PtyEvent::Cwd { path });
                             }
                             if let Some(mark) = prompts.push(&chunk) {
                                 let (prompt_mark, exit_code) = match mark {
@@ -289,12 +362,15 @@ impl PaneManager {
                                     PromptMark::CommandStart => (PromptKind::CommandStart, None),
                                     PromptMark::CommandEnd(code) => (PromptKind::CommandEnd, code),
                                 };
-                                reader_sink(PtyEvent::Prompt {
-                                    mark: prompt_mark,
-                                    exit_code,
-                                });
+                                push(
+                                    &reader_stream,
+                                    PtyEvent::Prompt {
+                                        mark: prompt_mark,
+                                        exit_code,
+                                    },
+                                );
                             }
-                            reader_sink(PtyEvent::Data { chunk });
+                            push(&reader_stream, PtyEvent::Data { chunk });
                         }
                         Err(_) => break,
                     }
@@ -302,7 +378,7 @@ impl PaneManager {
             })
             .map_err(|e| PtyError::Backend(e.to_string()))?;
 
-        let waiter_sink = Arc::clone(&sink);
+        let waiter_stream = Arc::clone(&stream);
         let waiter_handle = thread::Builder::new()
             .name(format!("hp-pty-wait-{}", spec.id))
             .spawn(move || {
@@ -310,7 +386,7 @@ impl PaneManager {
                     Ok(status) => Some(status.exit_code() as i32),
                     Err(_) => None,
                 };
-                waiter_sink(PtyEvent::Exit { code });
+                push(&waiter_stream, PtyEvent::Exit { code });
             })
             .map_err(|e| PtyError::Backend(e.to_string()))?;
 
@@ -322,8 +398,24 @@ impl PaneManager {
                 killer,
                 reader: Some(reader_handle),
                 waiter: Some(waiter_handle),
+                stream,
             },
         );
+        Ok(())
+    }
+
+    /// Hand a pane that is still alive to a new view.
+    ///
+    /// This is what makes rebuilding the interface a reconnection rather than a
+    /// restart: the new view is given what the pane has already printed, in order,
+    /// and then keeps receiving. `NotFound` is the caller's cue to open a pane
+    /// instead - a shell that has already gone is not something to attach to.
+    pub fn attach(&self, id: &str, sink: EventSink) -> Result<(), PtyError> {
+        let panes = self.panes.lock();
+        let pane = panes
+            .get(id)
+            .ok_or_else(|| PtyError::NotFound(id.to_string()))?;
+        pane.stream.lock().attach(sink);
         Ok(())
     }
 
@@ -919,5 +1011,147 @@ mod tests {
         };
         let json = serde_json::to_string(&event).expect("serialise");
         assert_eq!(json, r#"{"kind":"cwd","path":"C:/src"}"#);
+    }
+
+    #[test]
+    fn the_history_keeps_a_bounded_amount() {
+        let mut stream = EventStream::default();
+        for _ in 0..HISTORY_EVENTS + 8 {
+            stream.push(PtyEvent::Data {
+                chunk: "x".repeat(1024),
+            });
+        }
+
+        assert!(
+            stream.bytes <= HISTORY_BYTES,
+            "half a megabyte is the promise, not a hope: {}",
+            stream.bytes
+        );
+        assert!(stream.history.len() <= HISTORY_EVENTS);
+    }
+
+    #[test]
+    fn attaching_replays_in_order_and_then_keeps_sending() {
+        use std::sync::mpsc;
+
+        let mut stream = EventStream::default();
+        stream.push(PtyEvent::Data {
+            chunk: "one".to_string(),
+        });
+
+        let (sender, receiver) = mpsc::channel();
+        stream.attach(Arc::new(move |event| {
+            let _ = sender.send(event);
+        }));
+        stream.push(PtyEvent::Data {
+            chunk: "two".to_string(),
+        });
+
+        let mut text = String::new();
+        for event in receiver.try_iter() {
+            if let PtyEvent::Data { chunk } = event {
+                text.push_str(&chunk);
+            }
+        }
+        assert_eq!(text, "onetwo", "history first, then what comes next");
+    }
+
+    /// A rebuilt interface reconnects to a shell that is still running, so the
+    /// view it gets back shows what was on the pane rather than an empty box.
+    #[cfg(windows)]
+    #[test]
+    fn an_attached_view_is_given_what_the_pane_already_said() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let manager = PaneManager::new();
+        let (first_sender, first_receiver) = mpsc::channel();
+        let first: EventSink = Arc::new(move |event| {
+            let _ = first_sender.send(event);
+        });
+
+        manager
+            .spawn(
+                PaneSpec {
+                    id: "p".to_string(),
+                    cwd: None,
+                    shell: Some("cmd.exe".to_string()),
+                    // Prints, waits, prints again: the first word is history by the
+                    // time the second view attaches, and the second one is live.
+                    args: vec![
+                        "/c".to_string(),
+                        "echo first & ping -n 4 127.0.0.1 >nul & echo second".to_string(),
+                    ],
+                    env: Default::default(),
+                    cols: 80,
+                    rows: 24,
+                    integration: false,
+                    agent: None,
+                },
+                first,
+            )
+            .expect("spawn");
+
+        let mut seen = String::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !seen.contains("first") {
+            assert!(
+                Instant::now() < deadline,
+                "the pane never printed: {seen:?}"
+            );
+            match first_receiver.recv_timeout(Duration::from_secs(2)) {
+                Ok(PtyEvent::Data { chunk }) => {
+                    // ConPTY asks whoever is on the other end where the cursor is
+                    // before it prints anything, and waits for the answer. A
+                    // terminal answers this; in a test, nobody else will.
+                    if chunk.contains("\u{1b}[6n") {
+                        let _ = manager.write("p", "\u{1b}[1;1R");
+                    }
+                    seen.push_str(&chunk);
+                }
+                Ok(_) => {}
+                Err(_) => panic!("the pane stopped talking before it printed: {seen:?}"),
+            }
+        }
+
+        let (second_sender, second_receiver) = mpsc::channel();
+        let second: EventSink = Arc::new(move |event| {
+            let _ = second_sender.send(event);
+        });
+        manager.attach("p", second).expect("attach");
+
+        let mut later = String::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !later.contains("second") && Instant::now() < deadline {
+            match second_receiver.recv_timeout(Duration::from_secs(1)) {
+                Ok(PtyEvent::Data { chunk }) => later.push_str(&chunk),
+                Ok(_) => {}
+                // A quiet pane is not a finished one: the command running here
+                // prints nothing while it waits.
+                Err(_) => continue,
+            }
+        }
+
+        assert!(
+            later.contains("first"),
+            "the new view was not given the history: {later:?}"
+        );
+        assert!(
+            later.contains("second"),
+            "and it has to keep receiving: {later:?}"
+        );
+
+        let _ = manager.kill("p");
+    }
+
+    #[test]
+    fn attaching_to_a_pane_that_is_gone_is_an_error() {
+        let manager = PaneManager::new();
+        let sink: EventSink = Arc::new(|_| {});
+        let outcome = manager.attach("missing", sink);
+        assert!(
+            matches!(outcome, Err(PtyError::NotFound(_))),
+            "expected NotFound, got {outcome:?}"
+        );
     }
 }

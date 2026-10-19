@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import {
   containsPane,
+  paneAttach,
   paneClose,
   paneList,
   paneResize,
@@ -148,9 +149,7 @@ export class PaneRuntime {
       if (value.trim()) this.update(() => ({ title: value.trim() }));
     });
 
-    void paneSpawn(options.spec(this.term.cols, this.term.rows), (event) =>
-      this.receive(event),
-    )
+    void this.open(options)
       .then(() =>
         this.update((current) =>
           current.status === "starting" ? { status: "live" } : {},
@@ -163,6 +162,28 @@ export class PaneRuntime {
         );
         this.update(() => ({ status: "failed" }));
       });
+  }
+
+  /**
+   * Attaches to a shell that is still running, or opens one.
+   *
+   * The backend's list is the authority here, not this module's registry: after an
+   * interface is rebuilt the registry is empty while the shells are still there,
+   * which is exactly the case this exists for. Attaching hands the view the pane's
+   * recent output, so the scrollback and whatever is running come back with it.
+   */
+  private async open(options: PaneRuntimeOptions): Promise<void> {
+    const live = await paneList().catch((): string[] => []);
+    if (this.disposed) return;
+
+    if (live.includes(this.id)) {
+      await paneAttach(this.id, (event) => this.receive(event));
+      return;
+    }
+
+    await paneSpawn(options.spec(this.term.cols, this.term.rows), (event) =>
+      this.receive(event),
+    );
   }
 
   /** Draws the terminal in `host`. Safe to call again after a detach. */
