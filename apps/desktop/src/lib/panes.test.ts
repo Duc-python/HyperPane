@@ -4,7 +4,9 @@ import {
   orphanPanes,
   paneRows,
   paneTone,
+  tilingRatios,
   titleLooksLikeProgramPath,
+  widestPane,
   type PaneLive,
 } from "./panes";
 import type { LayoutNode } from "./ipc";
@@ -142,5 +144,59 @@ describe("sessions left over by a rebuilt interface", () => {
 
   it("has nothing to reconnect to without a workspace", () => {
     expect(orphanPanes(["p1", "p2"], null)).toEqual(["p1", "p2"]);
+  });
+});
+
+describe("where a team wave lands", () => {
+  it("picks the pane that owns the most of the window", () => {
+    // p1 is half the window; p2 and p3 are quarters. A wave goes into p1.
+    const layout: LayoutNode = {
+      type: "split",
+      direction: "row",
+      ratio: 0.5,
+      first: { type: "leaf", pane: "p1" },
+      second: {
+        type: "split",
+        direction: "column",
+        ratio: 0.5,
+        first: { type: "leaf", pane: "p2" },
+        second: { type: "leaf", pane: "p3" },
+      },
+    };
+
+    const widest = widestPane(layout);
+    // The path names where that leaf sits, which is also where the split that
+    // replaces it will sit.
+    expect(widest?.pane).toBe("p1");
+    expect(widest?.path).toEqual([false]);
+    expect(widest?.share).toBeCloseTo(0.5);
+  });
+
+  it("names the path of a nested pane the way a resize does", () => {
+    const layout: LayoutNode = {
+      type: "split",
+      direction: "row",
+      ratio: 0.25,
+      first: { type: "leaf", pane: "p1" },
+      second: {
+        type: "split",
+        direction: "row",
+        ratio: 0.25,
+        first: { type: "leaf", pane: "p2" },
+        second: { type: "leaf", pane: "p3" },
+      },
+    };
+
+    expect(widestPane(layout)).toEqual({
+      pane: "p3",
+      path: [true, true],
+      share: 0.5625,
+    });
+  });
+
+  it("splits a row into equal columns, not one wide pane and slivers", () => {
+    expect(tilingRatios(1)).toEqual([0.5]);
+    expect(tilingRatios(2)).toEqual([1 / 3, 1 / 2]);
+    expect(tilingRatios(3)).toEqual([1 / 4, 1 / 3, 1 / 2]);
   });
 });

@@ -137,3 +137,45 @@ export function orphanPanes(
   if (!layout) return [...live];
   return live.filter((id) => !containsPane(layout, id));
 }
+
+/**
+ * The pane that owns the most of the window, and the path that names it.
+ *
+ * A team wave lands in the widest pane. Splitting the one a person happened to
+ * have focused put two debaters into a quarter-width column, where their own
+ * interface wrapped every word. The path is the list of decisions from the root
+ * (false = first, true = second), which is how a split is named when it is
+ * resized.
+ */
+export function widestPane(
+  layout: LayoutNode,
+): { pane: string; path: boolean[]; share: number } | null {
+  let best: { pane: string; path: boolean[]; share: number } | null = null;
+
+  const walk = (node: LayoutNode, path: boolean[], share: number) => {
+    if (node.type === "leaf") {
+      if (!best || share > best.share) best = { pane: node.pane, path, share };
+      return;
+    }
+    // A ratio outside these bounds is a file someone edited by hand; the tree
+    // is still readable, so clamp rather than refuse the whole layout.
+    const ratio = Math.min(Math.max(node.ratio, 0.05), 0.95);
+    walk(node.first, [...path, false], share * ratio);
+    walk(node.second, [...path, true], share * (1 - ratio));
+  };
+
+  walk(layout, [], 1);
+  return best;
+}
+
+/**
+ * The ratios a row of fresh panes needs so every pane in it is the same width.
+ *
+ * The layout is binary, so equal shares are a chain: the pane being split keeps
+ * `1/(n+1)` of the row, the next split takes `1/n` of what is left, and so on.
+ * Two new panes therefore leave three equal columns, not one wide one and two
+ * slivers.
+ */
+export function tilingRatios(tiles: number): number[] {
+  return Array.from({ length: tiles }, (_, index) => 1 / (tiles - index + 1));
+}

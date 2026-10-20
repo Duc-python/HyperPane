@@ -50,7 +50,14 @@ import {
   restoredAgents,
   type PaneAgent,
 } from "./lib/agents";
-import { displayPaneTitle, orphanPanes, paneRows, type PaneLive } from "./lib/panes";
+import {
+  displayPaneTitle,
+  orphanPanes,
+  paneRows,
+  tilingRatios,
+  widestPane,
+  type PaneLive,
+} from "./lib/panes";
 import { ensureSelfProfile, panesWithProfiles, SELF_PROFILE } from "./lib/profiles";
 import { typeIntoPane, updateCommand, updateHint } from "./lib/update";
 import { sameRoomView } from "./lib/room";
@@ -343,9 +350,10 @@ export default function App() {
     }
   }, [info, splitWith]);
 
-  const closePane = useCallback(async (id: string) => {
+  /** Close a pane and hand back the layout that is left, when it changed. */
+  const closePane = useCallback(async (id: string): Promise<Workspace | null> => {
     const current = workspaceRef.current;
-    if (!current || paneIds(current.layout).length <= 1) return;
+    if (!current || paneIds(current.layout).length <= 1) return null;
     await paneClose(id).catch(() => undefined);
     setPaneProfiles((map) => {
       const remaining = { ...map };
@@ -363,9 +371,12 @@ export default function App() {
       return remaining;
     });
     try {
-      setWorkspace(await workspaceClosePane(id));
+      const next = await workspaceClosePane(id);
+      setWorkspace(next);
+      return next;
     } catch (cause) {
       setError(String(cause));
+      return null;
     }
   }, []);
 
@@ -440,10 +451,11 @@ export default function App() {
 
   /** Register the panes a wave opened and lay them out beside the person. */
   const placeWave = useCallback(
-    async (members: StartedMember[]) => {
-      const current = workspaceRef.current;
+    async (members: StartedMember[], from?: Workspace | null) => {
+      const current = from ?? workspaceRef.current;
       if (!current) return;
-      const target = current.focused ?? paneIds(current.layout)[0];
+      const widest = widestPane(current.layout);
+      const target = widest?.pane ?? current.focused ?? paneIds(current.layout)[0];
       if (!target) return;
 
       setPaneAgents((map) => {
@@ -463,11 +475,21 @@ export default function App() {
         return next;
       });
 
-      // Every member splits from the pane the person is in, so the wave lands
-      // beside it rather than nesting into the last member opened.
+      // The wave lands in the widest pane and is tiled into equal columns.
+      // Splitting whichever pane had focus put two debaters into a quarter-width
+      // column, where their own interface wrapped every word; splitting the same
+      // pane twice without touching the ratios left one wide pane and two
+      // slivers. The first split stays where that pane was, and each following
+      // split goes into the pane just added, so the row grows to the right.
       let workspace = current;
-      for (const member of members) {
-        workspace = await workspaceSplit(target, "row", member.pane);
+      let holder = target;
+      let path = widest?.path ?? [];
+      const ratios = tilingRatios(members.length);
+      for (const [index, member] of members.entries()) {
+        workspace = await workspaceSplit(holder, "row", member.pane);
+        workspace = await workspaceSetRatio(path, ratios[index] ?? 0.5);
+        holder = member.pane;
+        path = [...path, true];
       }
       setWorkspace(workspace);
     },
@@ -500,6 +522,7 @@ export default function App() {
       const waveMembers = spawnable.filter((member) => member.wave === firstWave);
       const ids = waveMembers.map(() => `p${nextPane.current++}`);
 
+      teamWave.current = ids;
       const started = await teamStart({
         key,
         task,
@@ -513,7 +536,7 @@ export default function App() {
     } catch (cause) {
       setError(String(cause));
     }
-  }, [placeWave]);
+  }, [placeWave, closePane]);
 
   // Live panes, by id, so a command can act on the focused one. Panes register
   // themselves when their terminal exists and clear on the way out.
@@ -565,6 +588,8 @@ export default function App() {
 
   /** One poll of the run, kept out of the effect so it can be awaited. */
   const advancing = useRef(false);
+  /** The panes the wave in progress was given. */
+  const teamWave = useRef<string[]>([]);
   const pollTeam = useCallback(async () => {
     // Advancing takes a round trip, so a poll could overlap the previous one
     // and ask to open the same wave twice. The app refuses the second, but
@@ -576,7 +601,10 @@ export default function App() {
       setTeamRun(status);
       // A finished run takes its view with it. Leaving the flag up would open
       // a timeline nobody asked for the moment the next run starts.
-      if (!status) setShowRun(false);
+      if (!status) {
+        setShowRun(false);
+        teamWave.current = [];
+      }
       if (!status || status.holding || status.running > 0) return;
 
       // The last advance is the one that reports `finished` or raises a hold,
@@ -588,7 +616,15 @@ export default function App() {
       );
       const outcome = await teamAdvance(ids);
       if (outcome.kind === "ready") {
-        await placeWave(outcome.members);
+        // The wave that just finished is done with its panes: their reports are
+        // recorded, and leaving them open would crowd out the wave replacing
+        // them. The layout they leave is what the new wave is placed into.
+        let landed: Workspace | null = null;
+        for (const pane of teamWave.current) {
+          landed = (await closePane(pane)) ?? landed;
+        }
+        teamWave.current = outcome.members.map((member) => member.pane);
+        await placeWave(outcome.members, landed);
       }
       setTeamRun(await teamStatus());
     } catch (cause) {
@@ -596,7 +632,7 @@ export default function App() {
     } finally {
       advancing.current = false;
     }
-  }, [placeWave]);
+  }, [placeWave, closePane]);
 
   useEffect(() => {
     const timer = window.setInterval(() => void pollTeam(), 2000);
