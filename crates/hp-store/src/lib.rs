@@ -67,7 +67,10 @@ impl SessionStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let bytes = serde_json::to_vec_pretty(session)?;
+        // The task a run was started with is not the file's to keep:
+        // reopening a pane is not the same as giving the same order again.
+        let stored = session.clone().without_tasks();
+        let bytes = serde_json::to_vec_pretty(&stored)?;
         self.write_atomically(&bytes)
     }
 
@@ -144,6 +147,41 @@ mod tests {
         store.save(&session).expect("save");
         let loaded = store.load().expect("load");
         assert_eq!(loaded, session.normalise());
+    }
+
+    #[test]
+    fn saving_a_run_does_not_write_its_task() {
+        // The file is read by anything with access to it, and the next launch
+        // would replay whatever it found there. What it keeps is the launch.
+        let scratch = Scratch::new("task");
+        let store = scratch.store();
+
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace::single("main", "Main", "p1"));
+        session.agents.insert(
+            "p1".into(),
+            hp_core::PaneAgent {
+                id: "opencode".into(),
+                label: "opencode".into(),
+                program: "opencode".into(),
+                args: vec!["--prompt".into(), "find the bug in the parser".into()],
+                restore_args: vec!["--interactive".into()],
+                needs_paste: false,
+                cwd: None,
+                branch: None,
+            },
+        );
+        store.save(&session).expect("save");
+
+        let written = std::fs::read_to_string(store.path()).expect("read");
+        assert!(
+            !written.contains("find the bug"),
+            "the task stayed in the file"
+        );
+
+        let loaded = store.load().expect("load");
+        let agent = loaded.agents.get("p1").expect("agent");
+        assert_eq!(agent.args, ["--interactive"]);
     }
 
     #[test]

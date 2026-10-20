@@ -13,6 +13,7 @@ const launch: PaneAgent = {
   label: "opencode",
   program: "opencode",
   args: ["--model", "x"],
+  restoreArgs: ["--model", "x"],
   needsPaste: true,
   cwd: "C:\\repo\\.worktrees\\run",
   branch: "hp/run",
@@ -21,6 +22,17 @@ const launch: PaneAgent = {
 describe("bringing agents back", () => {
   it("keeps the launch of a pane that is still there", () => {
     expect(restoredAgents(["p1"], { p1: launch })).toEqual({ p1: launch });
+  });
+
+  it("comes back with the launch, not with the run", () => {
+    // A file from before this rule can still hold the task in `args`; starting
+    // the CLI again must not hand the same order over a second time.
+    const stale: PaneAgent = {
+      ...launch,
+      args: ["--prompt", "find the bug"],
+      restoreArgs: ["--interactive"],
+    };
+    expect(restoredAgents(["p1"], { p1: stale }).p1?.args).toEqual(["--interactive"]);
   });
 
   it("drops a launch whose pane is gone", () => {

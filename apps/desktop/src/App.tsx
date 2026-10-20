@@ -454,6 +454,7 @@ export default function App() {
             label: member.label,
             program: member.program,
             args: member.args,
+            restoreArgs: member.restoreArgs,
             needsPaste: member.needsPaste,
             cwd: member.cwd,
             branch: member.branch,
@@ -1086,6 +1087,9 @@ export default function App() {
       {worktreesOpen ? (
         <WorktreesPanel
           formatPath={formatPath}
+          inUse={Object.values(paneAgents)
+            .map((agent) => agent.cwd)
+            .filter((cwd): cwd is string => typeof cwd === "string")}
           onClose={() => setWorktreesOpen(false)}
         />
       ) : null}

@@ -678,6 +678,8 @@ struct AgentOpen {
     label: String,
     program: String,
     args: Vec<String>,
+    /// The same launch without the task, which is what a session keeps.
+    restore_args: Vec<String>,
     needs_paste: bool,
     cwd: Option<String>,
     branch: Option<String>,
@@ -745,7 +747,12 @@ fn open_reserved(
     })?;
 
     let (program, args) = spec.launch(task);
+    // The same CLI without a task: what a restored pane starts with. A session
+    // keeps this instead of `args`, so reopening a pane does not give the same
+    // order a second time.
+    let (restore_program, restore) = spec.launch("");
     let (program, args) = hp_agents::spawn_argv(program, &args);
+    let (_, restore_args) = hp_agents::spawn_argv(restore_program, &restore);
 
     state
         .audit
@@ -776,6 +783,7 @@ fn open_reserved(
         label: spec.label.to_string(),
         program,
         args,
+        restore_args,
         needs_paste: spec.needs_paste(),
         cwd: worktree.map(|worktree| worktree.path.display().to_string()),
         branch: worktree.map(|worktree| worktree.branch.clone()),
@@ -858,6 +866,7 @@ struct StartedMember {
     branch: Option<String>,
     program: String,
     args: Vec<String>,
+    restore_args: Vec<String>,
     needs_paste: bool,
     cwd: Option<String>,
 }
@@ -959,6 +968,7 @@ fn open_wave(
             branch: opened.branch,
             program: opened.program,
             args: opened.args,
+            restore_args: opened.restore_args,
             needs_paste: opened.needs_paste,
             cwd: opened.cwd,
         });

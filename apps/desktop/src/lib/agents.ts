@@ -21,7 +21,9 @@ export function restoredAgents(
   const out: Record<string, PaneAgent> = {};
   for (const pane of panes) {
     const launch = stored[pane];
-    if (launch) out[pane] = launch;
+    // A file written before the app kept a task out of it still has one in
+    // `args`. Spawn what starts the CLI again, never what starts the old run.
+    if (launch) out[pane] = { ...launch, args: launch.restoreArgs ?? [] };
   }
   return out;
 }
@@ -47,6 +49,7 @@ export async function openPaneAgent(
     label: opened.label,
     program: opened.program,
     args: opened.args,
+    restoreArgs: opened.restoreArgs,
     needsPaste: opened.needsPaste,
     cwd: opened.cwd,
     branch: opened.branch,

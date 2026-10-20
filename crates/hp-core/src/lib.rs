@@ -321,8 +321,16 @@ pub struct PaneAgent {
     pub id: String,
     pub label: String,
     pub program: String,
+    /// The arguments of the run that is alive right now, task included.
+    ///
+    /// Empty once this came back from a file: a session does not keep the task,
+    /// because a file that keeps it hands the same order to the next launch.
     #[serde(default)]
     pub args: Vec<String>,
+    /// The arguments that start the same CLI in the same pane *without* a task,
+    /// which is what a restored pane gets.
+    #[serde(default)]
+    pub restore_args: Vec<String>,
     /// The task had to be typed in once the agent was up.
     #[serde(default)]
     pub needs_paste: bool,
@@ -430,7 +438,34 @@ impl Session {
             .unwrap_or_default();
         self.panes.retain(|pane, _| live.contains(pane));
         self.agents.retain(|pane, _| live.contains(pane));
+        for agent in self.agents.values_mut() {
+            agent.forget_task();
+        }
         self
+    }
+
+    /// The same session, with no run's task in it.
+    ///
+    /// What a file may keep is the launch, not the order someone gave. This is
+    /// applied when saving as well as when loading, so a task cannot reach the
+    /// file through a caller that did not think about it.
+    pub fn without_tasks(mut self) -> Self {
+        for agent in self.agents.values_mut() {
+            agent.forget_task();
+        }
+        self
+    }
+}
+
+impl PaneAgent {
+    /// Drop the arguments of the run that was launched, keeping the ones that
+    /// start the same CLI again without a task.
+    ///
+    /// A task is a decision made once. A file that keeps it hands the same
+    /// order to the next launch, and a pane that comes back should be waiting
+    /// for one instead of starting work nobody asked for a second time.
+    pub fn forget_task(&mut self) {
+        self.args = self.restore_args.clone();
     }
 }
 
@@ -646,6 +681,7 @@ mod tests {
             label: "opencode".into(),
             program: "opencode".into(),
             args: vec!["--foo".into()],
+            restore_args: vec!["--foo".into()],
             needs_paste: true,
             cwd: Some("/repo/.worktrees/run".into()),
             branch: Some("hp/run".into()),
@@ -668,6 +704,44 @@ mod tests {
         let back: Session = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(back.agents.get("p1"), Some(&pane_agent()));
+    }
+
+    #[test]
+    fn a_saved_session_keeps_the_launch_but_not_the_task() {
+        // The task is a decision made once. A file that keeps it hands the same
+        // order to the next launch, so a pane that comes back would start work
+        // nobody asked for again.
+        let mut session = Session::empty();
+        session.workspace = Some(Workspace {
+            id: "w".into(),
+            name: "w".into(),
+            layout: LayoutNode::leaf("p1"),
+            focused: Some("p1".into()),
+            active: true,
+        });
+        let mut agent = pane_agent();
+        agent.args = vec!["--prompt".into(), "find the bug".into()];
+        agent.restore_args = vec!["--interactive".into()];
+        session.agents.insert("p1".into(), agent);
+
+        let stored = session.without_tasks();
+        let kept = stored.agents.get("p1").expect("agent");
+        assert_eq!(kept.args, ["--interactive"]);
+        assert_eq!(kept.restore_args, ["--interactive"]);
+
+        // Loading an older file, which has the task in `args` and no
+        // `restoreArgs` at all, drops the task rather than re-running it.
+        let old = r#"{
+            "version": 1,
+            "workspace": {"id":"w","name":"w","layout":{"type":"leaf","pane":"p1"},"focused":"p1","active":true},
+            "profiles": [{"id":"default","name":"Default shell","shell":null,"args":[],"cwd":null,"env":{}}],
+            "defaultProfile": "default",
+            "panes": {},
+            "agents": {"p1":{"id":"opencode","label":"opencode","program":"opencode","args":["--prompt","find the bug"],"needsPaste":false,"cwd":null,"branch":null}}
+        }"#;
+        let loaded: Session = serde_json::from_str(old).expect("deserialize");
+        let loaded = loaded.normalise();
+        assert!(loaded.agents.get("p1").expect("agent").args.is_empty());
     }
 
     #[test]

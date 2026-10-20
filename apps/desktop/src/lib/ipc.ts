@@ -243,7 +243,15 @@ export interface PaneAgent {
   id: string;
   label: string;
   program: string;
+  /** The arguments of the run that is alive now, task included. */
   args: string[];
+  /**
+   * The same launch without the task.
+   *
+   * A session keeps this one: a file that keeps the task hands the same order
+   * to the next launch, and a restored pane should be waiting for one.
+   */
+  restoreArgs: string[];
   /** The task had to be typed in once the agent was up. */
   needsPaste: boolean;
   /** The directory this run is confined to, when it has one. */
@@ -268,6 +276,7 @@ export interface AgentOpen {
   label: string;
   program: string;
   args: string[];
+  restoreArgs: string[];
   needsPaste: boolean;
   cwd: string | null;
   branch: string | null;
@@ -610,6 +619,7 @@ export interface StartedMember {
   branch: string | null;
   program: string;
   args: string[];
+  restoreArgs: string[];
   needsPaste: boolean;
   cwd: string | null;
 }
