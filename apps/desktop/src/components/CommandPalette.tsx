@@ -126,9 +126,18 @@ export function CommandPalette({
                     <span className="w-20 shrink-0 text-[10px] tracking-wide text-ink-faint uppercase">
                       {command.group}
                     </span>
-                    <span className="truncate text-ink">{command.title}</span>
+                    {/*
+                      The label is the command, so it keeps the space it needs;
+                      the hint is what gives way. A long explanation beside a
+                      short chord is the same row, and it used to squeeze the
+                      label down to its first two letters ("Up…" for "Update
+                      from source…").
+                    */}
+                    <span className="min-w-0 flex-1 truncate text-ink">
+                      {command.title}
+                    </span>
                     {command.hint ? (
-                      <kbd className="ml-auto shrink-0 rounded border border-line bg-raised px-1.5 py-px text-[9px] text-ink-muted">
+                      <kbd className="ml-auto max-w-[55%] min-w-0 shrink truncate rounded border border-line bg-raised px-1.5 py-px text-[9px] text-ink-muted">
                         {command.hint}
                       </kbd>
                     ) : null}

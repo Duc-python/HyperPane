@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorktreeStateView } from "./ipc";
-import { describeWorktree, needsConfirming, removalCost } from "./worktrees";
+import { describeWorktree, needsConfirming, normalisePath, removalCost } from "./worktrees";
 
 /**
  * The sentence a person reads before deleting something of their own. It has to
@@ -68,5 +68,21 @@ describe("what removing a worktree would cost", () => {
 
     expect(removalCost(empty)).toBeNull();
     expect(describeWorktree(empty)).toBe("empty, and no longer a worktree");
+  });
+});
+
+describe("comparing a worktree with the one a pane is running in", () => {
+  it("forgives separators, case and a trailing slash", () => {
+    // Windows reports either separator and does not care about case; the two
+    // answers come from different commands and must still name one directory.
+    expect(normalisePath("C:/App/Worktrees/agent-1/")).toBe(
+      normalisePath("c:\\app\\worktrees\\agent-1"),
+    );
+  });
+
+  it("keeps two different worktrees apart", () => {
+    expect(normalisePath("C:\\app\\worktrees\\agent-1")).not.toBe(
+      normalisePath("C:\\app\\worktrees\\agent-10"),
+    );
   });
 });

@@ -49,3 +49,15 @@ export function describeWorktree(entry: WorktreeStateView): string {
   if (entry.changes === 0 && entry.commits === 0) return "clean";
   return removalCost(entry) ?? "clean";
 }
+
+/**
+ * The same path, in the form two answers can be compared in.
+ *
+ * Windows reports either separator and does not care about case, so comparing
+ * raw strings would say a worktree is not the one a pane is running in. The
+ * trailing separator goes too: a directory is the same directory with or
+ * without it.
+ */
+export function normalisePath(path: string): string {
+  return path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
