@@ -14,7 +14,7 @@ pub mod brief;
 pub mod router;
 pub mod run;
 
-pub use brief::{write_brief, BriefInput};
+pub use brief::{write_brief, BriefInput, Reading};
 pub use run::{Advance, Hold, RunState};
 
 use serde::{Deserialize, Serialize};

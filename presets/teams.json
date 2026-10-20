@@ -152,6 +152,82 @@
           ]
         }
       ]
+    },
+    {
+      "key": "debate",
+      "title": {
+        "en": "Debate a decision",
+        "vi": "Tranh luận một quyết định"
+      },
+      "purpose": {
+        "en": "Two agents argue opposite sides of one question, a third answers both, and a judge decides; the decision stays with you.",
+        "vi": "Hai agent lập luận hai phía của một câu hỏi, người thứ ba trả lời cả hai, rồi một người phân xử; quyết định vẫn là của bạn."
+      },
+      "group": "research",
+      "archetype": "researcher",
+      "gates": ["checkerPass"],
+      "stop": { "maxRounds": 1, "maxSpawns": 4, "wallMinutes": 30, "onStall": "escalate" },
+      "starterPrompt": {
+        "en": "Debate: [the question]. Both sides argue from this repository, not from memory.",
+        "vi": "Tranh luận: [câu hỏi]. Hai bên lập luận dựa trên kho mã này, không dựa vào trí nhớ."
+      },
+      "waves": [
+        {
+          "wave": 1,
+          "roles": [
+            {
+              "key": "for",
+              "label": { "en": "For", "vi": "Phía ủng hộ" },
+              "kind": "worker",
+              "readOnly": true,
+              "agents": ["opencode", "claude-code", "codex"],
+              "count": 1,
+              "tier": "mid",
+              "focus": "Argue for the proposition as strongly as the evidence allows, in at most five numbered points. Each point must cite something you read in this repository: a file and line, or a command and the output it printed. Name the weakest point in your own case and say why it is not fatal. Do not argue the other side, and do not pretend the question is settled."
+            },
+            {
+              "key": "against",
+              "label": { "en": "Against", "vi": "Phía phản đối" },
+              "kind": "worker",
+              "readOnly": true,
+              "agents": ["opencode", "claude-code", "codex"],
+              "count": 1,
+              "tier": "mid",
+              "focus": "Argue against the proposition as strongly as the evidence allows, in at most five numbered points. Each point must cite something you read in this repository: a file and line, or a command and the output it printed. Name the weakest point in your own case and say why it is not fatal. Do not argue the other side, and do not pretend the question is settled."
+            }
+          ]
+        },
+        {
+          "wave": 2,
+          "roles": [
+            {
+              "key": "answer",
+              "label": { "en": "Answer", "vi": "Phản hồi" },
+              "kind": "worker",
+              "readOnly": true,
+              "agents": ["opencode", "claude-code", "codex"],
+              "count": 1,
+              "tier": "mid",
+              "focus": "The two cases are in front of you. Take the strongest point from each side, answer it on the evidence in this repository, and concede the part you cannot answer. Then name the single fact that would change your mind. Do not restate either case: the judge has them."
+            }
+          ]
+        },
+        {
+          "wave": 3,
+          "roles": [
+            {
+              "key": "judge",
+              "label": { "en": "Judge", "vi": "Phân xử" },
+              "kind": "checker",
+              "readOnly": true,
+              "agents": ["codex", "claude-code", "opencode"],
+              "count": 1,
+              "tier": "strong",
+              "focus": "Decide the question from the three cases and the code, not from who wrote more. Name the argument that decided it, the strongest argument you rejected and why, and what would reverse the verdict. Check at least the citations you rely on; a claim nobody checked is not evidence. End with a line 'VERDICT: <answer>' and the confidence you would bet on: high, medium or low."
+            }
+          ]
+        }
+      ]
     }
   ]
 }

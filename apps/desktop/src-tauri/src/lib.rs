@@ -913,19 +913,37 @@ struct TeamStart {
     waves_remaining: usize,
 }
 
+/// What every wave of one run shares.
+///
+/// Grouped because the five travel together on every call, and a wave is
+/// easier to read about than an eight-argument function.
+struct WaveContext<'a> {
+    preset: &'a hp_teams::Preset,
+    plan: &'a [PlannedMember],
+    task: &'a str,
+    repo: Option<&'a str>,
+    /// What the waves before this one said, for the roles that answer them.
+    earlier: &'a [MemberClaim],
+}
+
 /// Open every member of one wave.
 ///
 /// The whole wave is reserved before any of it starts, so a refusal costs
 /// nothing rather than leaving half a wave running.
 fn open_wave(
     state: &AppState,
-    preset: &hp_teams::Preset,
-    plan: &[PlannedMember],
+    run: &WaveContext<'_>,
     wave: u32,
-    task: &str,
-    repo: Option<&str>,
     panes: &[String],
 ) -> Result<Vec<StartedMember>, String> {
+    let WaveContext {
+        preset,
+        plan,
+        task,
+        repo,
+        earlier,
+    } = *run;
+
     let members: Vec<&PlannedMember> = plan
         .iter()
         .filter(|member| member.wave == wave && member.kind != hp_teams::RoleKind::Leader)
@@ -945,6 +963,35 @@ fn open_wave(
         );
         return Err(message);
     }
+
+    // What the waves before this one said, handed to every member of this one.
+    // A later role exists to answer an earlier one, and a child gets no context
+    // of its own: if the app does not put the findings in the brief, the
+    // reviewer is asked to refute a list nobody gave it.
+    let prior: Vec<&MemberClaim> = earlier.iter().filter(|claim| claim.wave < wave).collect();
+    let prior_paths: Vec<String> = prior
+        .iter()
+        .map(|claim| {
+            findings_path(&state.findings_dir, &claim.pane)
+                .display()
+                .to_string()
+        })
+        .collect();
+    let prior_claims: Vec<Option<String>> = prior
+        .iter()
+        .map(|claim| claim.result.as_ref().map(describe_claim))
+        .collect();
+    let readings: Vec<hp_teams::Reading> = prior
+        .iter()
+        .enumerate()
+        .map(|(position, claim)| hp_teams::Reading {
+            wave: claim.wave,
+            label: claim.label.as_str(),
+            claim: prior_claims[position].as_deref(),
+            path: Some(prior_paths[position].as_str()),
+            findings: claim.findings.as_deref(),
+        })
+        .collect();
 
     let mut started = Vec::new();
     for (member, pane) in members.iter().zip(panes.iter()) {
@@ -986,6 +1033,7 @@ fn open_wave(
             worktree: worktree_path.as_deref(),
             wave: member.wave,
             findings: Some(&findings_text),
+            readings: &readings,
         });
 
         let opened = open_reserved(state, pane, &member.agent, &brief, worktree.as_ref())?;
@@ -1006,6 +1054,26 @@ fn open_wave(
     }
 
     Ok(started)
+}
+
+/// A child's own report as one short phrase, for the brief of the next wave.
+fn describe_claim(result: &RunResult) -> String {
+    let status = match result.status {
+        hp_agents::RunStatus::Done => "done",
+        hp_agents::RunStatus::Failed => "failed",
+        hp_agents::RunStatus::Blocked => "blocked",
+    };
+    let files = match result.files.len() {
+        0 => "no files".to_string(),
+        1 => "1 file".to_string(),
+        count => format!("{count} files"),
+    };
+    let tests = match result.tests {
+        hp_agents::TestOutcome::Pass => "tests pass",
+        hp_agents::TestOutcome::Fail => "tests fail",
+        hp_agents::TestOutcome::None => "no tests",
+    };
+    format!("{status}, {files}, {tests}")
 }
 
 /// What each pane of a wave has reported, and whether it is still going.
@@ -1134,15 +1202,15 @@ fn team_start(request: TeamStartRequest, state: State<'_, AppState>) -> Result<T
     };
 
     let wave = progress.wave;
-    let members = open_wave(
-        &state,
+    let context = WaveContext {
         preset,
-        &planned,
-        wave,
-        &request.task,
-        request.repo.as_deref(),
-        &request.panes,
-    )?;
+        plan: &planned,
+        task: &request.task,
+        repo: request.repo.as_deref(),
+        // The first wave has nothing behind it to answer.
+        earlier: &[],
+    };
+    let members = open_wave(&state, &context, wave, &request.panes)?;
 
     let waves_remaining = progress.pending.len();
     let _ = state.audit.append(
@@ -1291,15 +1359,17 @@ fn team_advance(panes: Vec<String>, state: State<'_, AppState>) -> Result<TeamAd
         },
         Advance::Finished => TeamAdvance::Finished,
         Advance::Ready { wave } => {
-            match open_wave(
-                &state,
-                &preset,
-                &run.plan,
-                wave,
-                &run.task,
-                run.repo.as_deref(),
-                &panes,
-            ) {
+            let opened = {
+                let context = WaveContext {
+                    preset: &preset,
+                    plan: &run.plan,
+                    task: &run.task,
+                    repo: run.repo.as_deref(),
+                    earlier: &run.claims,
+                };
+                open_wave(&state, &context, wave, &panes)
+            };
+            match opened {
                 Ok(members) => {
                     run.panes = panes;
                     let _ = state.audit.append(

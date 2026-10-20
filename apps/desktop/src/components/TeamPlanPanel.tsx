@@ -20,6 +20,17 @@ const KIND_NOTE: Record<string, string> = {
   worker: "writes",
 };
 
+/** What a role does with files, in one word.
+ *
+ * A worker may be read-only - a debater is one - and then it does not write:
+ * saying "writes · read-only" beside the same role is a contradiction, and the
+ * one word is what a person scans for.
+ */
+function kindNote(kind: string, readOnly: boolean): string {
+  if (readOnly && kind === "worker") return "reads";
+  return KIND_NOTE[kind] ?? kind;
+}
+
 /**
  * What a team would do, before it does any of it.
  *
@@ -148,7 +159,7 @@ export function TeamPlanPanel({ teamKey, onStart, onClose }: TeamPlanPanelProps)
                           {member.agent}
                         </span>
                         <span className="w-16 shrink-0 text-[10px] text-ink-faint">
-                          {KIND_NOTE[member.kind] ?? member.kind}
+                          {kindNote(member.kind, member.readOnly)}
                         </span>
                         <span className="min-w-0 flex-1 truncate text-[10px] text-ink-faint">
                           {member.readOnly ? "read-only" : "may write"}

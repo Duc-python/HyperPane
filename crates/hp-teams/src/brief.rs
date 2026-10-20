@@ -10,12 +10,31 @@
 //! - **GOAL** — what is true when this is finished.
 //! - **SCOPE** — where it may write, and what is read-only.
 //! - **SPECIFICATION** — what to do, which is the role's own instruction.
+//! - **WHAT EARLIER WAVES SAID** — only for a role that answers them.
 //! - **VERIFICATION** — how it proves it, or how it says it could not.
 //! - **REPORT** — the exact last line, so the app can read the claim.
 
 /// A brief is a prompt, not a document. Past this, something is wrong with the
 /// preset rather than with the task.
 pub const MAX_BRIEF_BYTES: usize = 64 * 1024;
+
+/// What an earlier wave reported, for a role that is meant to answer it.
+///
+/// A wave is a barrier, and the point of a later role is to do something with
+/// what the earlier one said: confirm it, refuse it, or build on it. The
+/// findings are handed over as text because a child gets no context of its own,
+/// and the path is named so it can read the whole thing.
+#[derive(Debug, Clone)]
+pub struct Reading<'a> {
+    pub wave: u32,
+    pub label: &'a str,
+    /// The line the member printed about itself, if it printed one.
+    pub claim: Option<&'a str>,
+    /// Where it wrote what it found, when the file has something in it.
+    pub path: Option<&'a str>,
+    /// What is in that file, as the app read it.
+    pub findings: Option<&'a str>,
+}
 
 /// Everything a brief needs to know.
 #[derive(Debug, Clone)]
@@ -38,6 +57,8 @@ pub struct BriefInput<'a> {
     /// Where a reading role writes what it found, when it has somewhere to
     /// write. A RESULT line is a summary; findings are the findings.
     pub findings: Option<&'a str>,
+    /// What earlier waves said, for a role whose job is to answer them.
+    pub readings: &'a [Reading<'a>],
 }
 
 /// Render the brief a member reads.
@@ -77,6 +98,8 @@ pub fn write_brief(input: &BriefInput<'_>) -> String {
         None => String::new(),
     };
 
+    let readings = render_readings(input.readings);
+
     let text = format!(
         "GOAL\n\
          {task}\n\
@@ -87,6 +110,7 @@ pub fn write_brief(input: &BriefInput<'_>) -> String {
          \n\
          SPECIFICATION\n\
          {focus}\n\
+         {readings}\
          \n\
          VERIFICATION\n\
          Run whatever proves this works and read the real output, not an exit \
@@ -106,10 +130,83 @@ pub fn write_brief(input: &BriefInput<'_>) -> String {
         wave = input.wave,
         scope = scope,
         focus = input.focus.trim(),
+        readings = readings,
         findings = findings,
     );
 
     fit(text)
+}
+
+/// The most of a brief that earlier waves' findings may take.
+///
+/// The report line at the end is how the app reads a member's claim, so a pile
+/// of findings must not push it out of a brief that is cut at the cap. Half the
+/// brief is the most the section may use; the role's own instruction and the
+/// report line get the rest.
+const MAX_READINGS_BYTES: usize = MAX_BRIEF_BYTES / 2;
+
+/// What a cut section says, so nobody mistakes a shortened finding for all of
+/// one. The member's file is named above it.
+const CUT_NOTE: &str = "  [cut here: the rest is in the file named above]\n";
+
+/// The section a role reads before it answers an earlier wave.
+///
+/// Empty when there is nothing to answer, so a first wave's brief is unchanged.
+fn render_readings(readings: &[Reading<'_>]) -> String {
+    let spoken: Vec<&Reading<'_>> = readings
+        .iter()
+        .filter(|reading| reading.findings.is_some())
+        .collect();
+    if spoken.is_empty() {
+        return String::new();
+    }
+
+    let mut section = String::from(
+        "\nWHAT EARLIER WAVES SAID\n\
+         These are claims by other members, not facts the app checked. Answer \
+         them: name the claim you looked at, say what you found, and say where \
+         you disagree. Agreeing in one line is enough - do not restate it.\n",
+    );
+
+    // Equal shares, because a verbose member must not be the only one the next
+    // wave can read.
+    let share = MAX_READINGS_BYTES / spoken.len();
+
+    for reading in spoken {
+        let claim = reading
+            .claim
+            .map(|claim| format!(" - {claim}"))
+            .unwrap_or_default();
+        let mut block = format!("\n- Wave {}, {}{}:\n", reading.wave, reading.label, claim);
+        if let Some(path) = reading.path {
+            block.push_str(&format!("  full file: {path}\n"));
+        }
+        for line in reading.findings.unwrap_or_default().lines() {
+            block.push_str("  ");
+            block.push_str(line);
+            block.push('\n');
+        }
+        section.push_str(&clip(block, share));
+    }
+
+    section
+}
+
+/// Hold one member's section to its share, on a line boundary, and say that it
+/// was cut rather than letting the brief's own cap do it silently at the end.
+fn clip(mut block: String, limit: usize) -> String {
+    if block.len() <= limit {
+        return block;
+    }
+
+    let mut end = limit.saturating_sub(CUT_NOTE.len());
+    while end > 0 && !block.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = block[..end].rfind('\n').map(|at| at + 1).unwrap_or(end);
+    block.truncate(end);
+    block.push_str(CUT_NOTE);
+    block
 }
 
 /// Strip what a terminal would choke on, and hold the size to the cap.
@@ -152,6 +249,7 @@ mod tests {
             worktree: None,
             wave: 1,
             findings: None,
+            readings: &[],
         }
     }
 
@@ -182,6 +280,92 @@ mod tests {
         );
         assert!(last.contains("files="), "{last}");
         assert!(last.contains("tests=pass|fail|none"), "{last}");
+    }
+
+    #[test]
+    fn an_earlier_wave_is_put_in_front_of_the_one_that_answers_it() {
+        let reading = Reading {
+            wave: 1,
+            label: "Logic reviewer",
+            claim: Some("done, tests pass"),
+            path: Some("/tmp/findings/p3.md"),
+            findings: Some("CRITICAL src/a.ts:12 - the retry loop never exits"),
+        };
+        let brief = write_brief(&BriefInput {
+            wave: 2,
+            readings: &[reading],
+            ..input()
+        });
+
+        assert!(brief.contains("WHAT EARLIER WAVES SAID"), "{brief}");
+        assert!(
+            brief.contains("Wave 1, Logic reviewer - done, tests pass"),
+            "{brief}"
+        );
+        assert!(brief.contains("full file: /tmp/findings/p3.md"), "{brief}");
+        assert!(brief.contains("CRITICAL src/a.ts:12"), "{brief}");
+
+        // After the role's own instruction, and before the report it writes.
+        let spec = brief.find("SPECIFICATION").expect("spec");
+        let said = brief.find("WHAT EARLIER WAVES SAID").expect("readings");
+        let report = brief.find("REPORT").expect("report");
+        assert!(spec < said && said < report, "{brief}");
+    }
+
+    #[test]
+    fn a_member_that_wrote_nothing_is_not_a_section() {
+        let quiet = Reading {
+            wave: 1,
+            label: "Quiet",
+            claim: Some("done"),
+            path: None,
+            findings: None,
+        };
+        let brief = write_brief(&BriefInput {
+            wave: 2,
+            readings: &[quiet],
+            ..input()
+        });
+        assert!(!brief.contains("WHAT EARLIER WAVES SAID"), "{brief}");
+    }
+
+    #[test]
+    fn a_wall_of_findings_cannot_push_out_the_line_the_app_reads_back() {
+        // The app reads a claim from the brief's last line, so a cut at the
+        // brief's cap must never be the reason a member's RESULT is lost.
+        let long = "a finding that goes on. ".repeat(20_000);
+        let first = Reading {
+            wave: 1,
+            label: "First",
+            claim: None,
+            path: Some("/tmp/first.md"),
+            findings: Some(&long),
+        };
+        let second = Reading {
+            wave: 1,
+            label: "Second",
+            claim: None,
+            path: Some("/tmp/second.md"),
+            findings: Some(&long),
+        };
+        let brief = write_brief(&BriefInput {
+            wave: 2,
+            readings: &[first, second],
+            ..input()
+        });
+
+        // Each member keeps its section and its way to the whole file, rather
+        // than one long finding silencing the other.
+        assert!(brief.contains("full file: /tmp/first.md"), "{brief}");
+        assert!(brief.contains("full file: /tmp/second.md"), "{brief}");
+        assert_eq!(brief.matches("[cut here").count(), 2, "{}", brief.len());
+
+        let last = brief.lines().last().expect("a last line");
+        assert!(
+            last.starts_with("RESULT status=done|failed|blocked"),
+            "{last}"
+        );
+        assert!(brief.len() <= MAX_BRIEF_BYTES, "{}", brief.len());
     }
 
     #[test]

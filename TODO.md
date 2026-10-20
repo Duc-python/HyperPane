@@ -112,6 +112,16 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] The findings themselves, not just the claim: the brief tells every member
       where to write what it found, the app reads that file back when the wave
       finishes and shows it on the hold, and an empty file is a valid answer.
+- [x] A later wave is given what earlier waves said: each brief carries the
+      earlier members' claims and findings and names the file each came from, so
+      a reviewer answers a finding instead of a description of one. The debate
+      preset uses it - two cases, an answer to both, then a judge - and a
+      read-only worker now says "reads" in the plan rather than "writes" beside
+      "read-only".
+- [x] What earlier waves said is capped in shares, not in total: each member
+      gets an equal slice of half the brief, and a cut section says where the
+      rest is. Without that, a wall of findings could push out the `RESULT` line
+      the app reads a claim from - the cap already cut the end of the brief.
 
 ## P4 — plugins
 
