@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  pairingCancel,
+  pairingHost,
+  pairingJoin,
+  pairingStatus,
+  peersList,
   roomFocus,
   roomFollow,
   roomGrant,
@@ -10,9 +15,12 @@ import {
   roomShare,
   roomStop,
   roomUnshare,
+  type PairingState,
+  type PeerInfo,
   type RoomAccess,
   type RoomView,
 } from "../lib/ipc";
+import { groupCode, splitPairingText } from "../lib/pairing";
 import { controllablePanes, participantCount } from "../lib/room";
 import {
   lineSeverity,
@@ -439,6 +447,10 @@ export function ControlRoom({
             </Section>
           </>
         ) : null}
+
+        <div className="mt-3 border-t border-line/40 pt-1">
+          <PairingCard />
+        </div>
       </div>
 
       {mode === "visiting" ? (
@@ -635,5 +647,218 @@ function TranscriptCard({
         ))}
       </pre>
     </article>
+  );
+}
+
+/**
+ * Pairing, from either end.
+ *
+ * The code is shown rather than hidden: it is the one thing two people carry
+ * between machines, and it is useless to anybody who did not just read it off
+ * this screen. The wait is polled, because the other machine is what decides
+ * when the wait is over - there is nothing here to subscribe to.
+ *
+ * A pairing outlives the panel, so the state lives in the app and this asks for
+ * it on mount: closing and reopening the dock shows the pairing that is already
+ * running rather than an empty form beside it.
+ */
+function PairingCard() {
+  const [status, setStatus] = useState<PairingState | null>(null);
+  const [peers, setPeers] = useState<PeerInfo[] | null>(null);
+  /** Whether the join form is open. Hosting needs no form. */
+  const [ask, setAsk] = useState<"none" | "join">("none");
+  const [address, setAddress] = useState("");
+  const [code, setCode] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshPeers = () => {
+    void Promise.resolve(peersList())
+      .then((view) => {
+        // The dock asks more than one question of the same mock in tests; a
+        // list that is not a list is not worth remembering.
+        if (Array.isArray(view?.peers)) setPeers(view.peers);
+      })
+      .catch(() => setPeers(null));
+  };
+
+  /** One answer from the app, whichever way it arrived. */
+  const absorb = (next: PairingState | null | undefined) => {
+    if (!next || typeof next !== "object" || !("state" in next)) return;
+    setStatus(next);
+    if (next.state === "paired") refreshPeers();
+  };
+
+  useEffect(() => {
+    refreshPeers();
+    // `Promise.resolve` around each call: the command returns a promise, and a
+    // panel that assumes so is a panel that cannot be rendered without one.
+    void Promise.resolve(pairingStatus())
+      .then(absorb)
+      .catch(() => undefined);
+  }, []);
+
+  // The other machine ends the wait, so ask again while waiting and stop asking
+  // when there is nothing left to wait for.
+  useEffect(() => {
+    if (status?.state !== "waiting") return;
+    const timer = window.setInterval(() => {
+      void Promise.resolve(pairingStatus())
+        .then(absorb)
+        .catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [status?.state]);
+
+  const start = (call: () => Promise<PairingState>) => {
+    setBusy(true);
+    setProblem(null);
+    void Promise.resolve(call())
+      .then(absorb)
+      .catch((cause: unknown) => setProblem(String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  const stop = () => {
+    setBusy(true);
+    void Promise.resolve(pairingCancel())
+      .then((next) => {
+        absorb(next);
+        setAsk("none");
+        setCode("");
+      })
+      .catch((cause: unknown) => setProblem(String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  /**
+   * Fill both answers from one line, when what was pasted is a pairing line.
+   *
+   * People copy "192.168.1.4:51234 ABCD-EFGH-IJKL" as one piece; anything else
+   * stays in the field it was typed into.
+   */
+  const fill = (text: string, into: "address" | "code") => {
+    const split = splitPairingText(text);
+    if (split) {
+      setAddress(split.address);
+      setCode(groupCode(split.code));
+      return;
+    }
+    if (into === "address") setAddress(text);
+    else setCode(text);
+  };
+
+  const paired = status?.state === "paired" ? status.peer : null;
+
+  return (
+    <Section title="Pair a machine" count={peers?.length ?? 0}>
+      {status?.state === "waiting" ? (
+        <>
+          {status.hosting && status.code ? (
+            <p className="select-all font-mono text-[12px] tracking-[0.14em] text-ink">
+              {groupCode(status.code)}
+            </p>
+          ) : null}
+          <p className="font-mono text-[9px] leading-4 text-ink-faint">
+            {status.hosting
+              ? `listening on ${status.address}`
+              : `pairing with ${status.address}`}
+          </p>
+          <p className="text-[9px] leading-4 text-ink-faint">{status.hint}</p>
+          <div className="mt-1 flex gap-1">
+            <Button label="stop" tone="danger" disabled={busy} onClick={stop} />
+          </div>
+        </>
+      ) : (
+        <>
+          {paired ? (
+            <p className="text-[10px] leading-4 text-ink-muted">
+              paired with <span className="text-ink">{paired.name}</span>{" "}
+              <span className="font-mono text-[9px] text-ink-faint">
+                {paired.short}
+              </span>
+            </p>
+          ) : status?.state === "failed" ? (
+            <p className="text-[10px] leading-4 text-danger">{status.reason}</p>
+          ) : (
+            <p className="text-[10px] leading-4 text-ink-faint">
+              two machines, one code. What each machine learns is the other's key,
+              so a reconnect later needs no code.
+            </p>
+          )}
+
+          {ask === "join" && !paired ? (
+            <>
+              <input
+                value={address}
+                onChange={(event) => fill(event.target.value, "address")}
+                placeholder="192.168.1.4:51234"
+                aria-label="Their address"
+                className={`${INPUT} mt-1`}
+              />
+              <input
+                value={code}
+                onChange={(event) => fill(event.target.value, "code")}
+                placeholder="ABCD-EFGH-IJKL"
+                aria-label="Pairing code"
+                className={`${INPUT} mt-1`}
+              />
+              <div className="mt-1 flex gap-1">
+                <Button
+                  label="pair"
+                  primary
+                  disabled={busy || address.trim() === "" || code.trim() === ""}
+                  onClick={() => start(() => pairingJoin(address.trim(), code))}
+                />
+                <Button
+                  label="back"
+                  disabled={busy}
+                  onClick={() => setAsk("none")}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="mt-1 flex flex-wrap gap-1">
+              <Button
+                label="show a code"
+                disabled={busy}
+                onClick={() => start(pairingHost)}
+              />
+              <Button
+                label="use a code"
+                disabled={busy}
+                onClick={() => {
+                  setProblem(null);
+                  setAsk("join");
+                }}
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      {problem ? (
+        <p className="mt-1 text-[9px] leading-4 text-danger">{problem}</p>
+      ) : null}
+
+      {peers && peers.length > 0 ? (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {peers.map((peer) => (
+            <li
+              key={peer.id}
+              title={peer.id}
+              className="flex items-baseline gap-1.5 rounded px-1 py-0.5"
+            >
+              <span className="min-w-0 truncate text-[10px] text-ink-muted">
+                {peer.name}
+              </span>
+              <span className="ml-auto font-mono text-[9px] text-ink-faint">
+                {peer.short}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </Section>
   );
 }

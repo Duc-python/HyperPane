@@ -5,145 +5,113 @@
 //! no third party, no name lookup, no shared file. A code typed by a person is
 //! the whole of the secret.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
-
-/// How long a side waits for the other before calling the exchange stuck.
-///
-/// Generous on purpose. One side stretches a sixty-bit code with 600,000 rounds
-/// of PBKDF2 by design - that is seconds of work - and a five second wait made
-/// this test fail on a loaded machine while the protocol was working perfectly.
-/// It is still bounded, so a real protocol mistake fails instead of hanging.
-const PATIENCE: Duration = Duration::from_secs(30);
-
-use hp_identity::pairing::{self, Answer, Confirmed, Offer};
+use hp_identity::pairing::{self, PairingError, WireError};
 use hp_identity::{Identity, PairingCode, Peers};
-
-fn send<T: serde::Serialize>(stream: &mut TcpStream, message: &T) {
-    let mut line = serde_json::to_string(message).expect("it encodes");
-    line.push('\n');
-    stream.write_all(line.as_bytes()).expect("it writes");
-    stream.flush().expect("it flushes");
-}
-
-fn receive<T: serde::de::DeserializeOwned>(reader: &mut impl BufRead) -> Option<T> {
-    let mut line = String::new();
-    let read = reader.read_line(&mut line).expect("it reads");
-    if read == 0 {
-        return None;
-    }
-    Some(serde_json::from_str(line.trim_end()).expect("it decodes"))
-}
 
 #[test]
 fn two_machines_pair_and_both_pin_the_other() {
     let code = PairingCode::generate();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-    let address = listener.local_addr().expect("an address");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("an address").to_string();
 
     // The host opens the pairing; the guest answers it.
     let host_code = code.clone();
     let host = std::thread::spawn(move || {
         let identity = Identity::generate();
-        let (stream, _) = listener.accept().expect("a connection");
-        let mut writing = stream.try_clone().expect("a handle");
-        let mut reading = BufReader::new(stream);
-        reading
-            .get_ref()
-            .set_read_timeout(Some(PATIENCE))
-            .expect("a timeout");
-
-        let offer = pairing::offer(&identity, "desk");
-        send(&mut writing, &offer);
-
-        let answer: Answer = receive(&mut reading).expect("the guest answered");
-        let confirmed = pairing::confirm(&host_code, &offer, &answer).expect("the code matches");
-        send(&mut writing, &confirmed);
-
-        let mut peers = Peers::default();
-        let (guest, name) = answer.guest();
-        let remembered = peers.remember(guest, name, 1);
-
-        (identity.id(), peers, remembered)
+        let paired =
+            pairing::host_one(&listener, &identity, "desk", &host_code).expect("the guest pairs");
+        (identity.id(), paired)
     });
 
     let guest = Identity::generate();
-    let stream = TcpStream::connect(address).expect("a connection");
-    let mut writing = stream.try_clone().expect("a handle");
-    let mut reading = BufReader::new(stream);
-    reading
-        .get_ref()
-        .set_read_timeout(Some(PATIENCE))
-        .expect("a timeout");
+    let paired = pairing::join(&address, &guest, "laptop", &code).expect("the host pairs");
 
-    let offer: Offer = receive(&mut reading).expect("the host offered");
-    assert_eq!(offer.host().1, "desk");
+    let (host_id, host_paired) = host.join().expect("the host thread");
 
-    let (reply, key) = pairing::answer(&guest, "laptop", &code, &offer);
-    send(&mut writing, &reply);
+    // Each side learned the other's identity and the name that travels with it.
+    assert_eq!(host_paired.id, guest.id());
+    assert_eq!(host_paired.name, "laptop");
+    assert_eq!(paired.id, host_id);
+    assert_eq!(paired.name, "desk");
 
-    let confirmed: Confirmed = receive(&mut reading).expect("the host proved itself");
-    pairing::accept(&key, &offer, &reply, &confirmed).expect("the host knows the code");
-
-    let (host_id, host_peers, remembered) = host.join().expect("the host thread");
-    assert_eq!(remembered, hp_identity::peers::Remembered::Added);
-
-    // Both ends now trust each other's id, and nothing else was needed.
-    assert!(host_peers.is_trusted(&guest.id()));
+    // And what the app does with the answer: pin it. The pinned id verifies its
+    // own signatures, so a reconnect later needs no code.
+    let mut peers = Peers::default();
     assert_eq!(
-        host_peers.get(&guest.id()).expect("pinned").name,
-        "laptop",
-        "the name travels with the pair, so the person sees the machine they typed the code for"
+        peers.remember(&paired.id, &paired.name, 1),
+        hp_identity::peers::Remembered::Added
     );
-    assert_eq!(host_id, offer.id);
+    assert!(peers.is_trusted(&paired.id));
+}
+
+#[test]
+fn a_listener_that_polls_still_gives_a_socket_that_can_wait() {
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    // The app's host polls its listener instead of blocking inside accept, and
+    // Windows hands the accepted socket the listener's mode. A handshake that
+    // assumed blocking wrote its opening message into a non-blocking socket,
+    // dropped the connection, and left the guest reading a reset (os error
+    // 10053) - which looked exactly like a wrong code.
+    let code = PairingCode::generate();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    listener.set_nonblocking(true).expect("a mode");
+    let address = listener.local_addr().expect("an address").to_string();
+
+    let host_code = code.clone();
+    let host = std::thread::spawn(move || {
+        let identity = Identity::generate();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    return pairing::host_over(stream, &identity, "desk", &host_code)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("accept: {error}"),
+            }
+        }
+        panic!("no guest arrived");
+    });
+
+    let guest = Identity::generate();
+    let paired = pairing::join(&address, &guest, "laptop", &code).expect("the host pairs");
+    assert_eq!(paired.name, "desk");
+
+    let host_paired = host
+        .join()
+        .expect("the host thread")
+        .expect("the host paired");
+    assert_eq!(host_paired.name, "laptop");
 }
 
 #[test]
 fn a_wrong_code_is_refused_by_the_host_and_nothing_is_pinned() {
     let code = PairingCode::generate();
     let wrong = PairingCode::generate();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-    let address = listener.local_addr().expect("an address");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("an address").to_string();
 
-    let host_code = code.clone();
     let host = std::thread::spawn(move || {
         let identity = Identity::generate();
-        let (stream, _) = listener.accept().expect("a connection");
-        let mut writing = stream.try_clone().expect("a handle");
-        let mut reading = BufReader::new(stream);
-
-        let offer = pairing::offer(&identity, "desk");
-        send(&mut writing, &offer);
-
-        let answer: Answer = receive(&mut reading).expect("the guest answered");
-        let refused = pairing::confirm(&host_code, &offer, &answer);
-
-        // Nothing is sent back, and nothing is pinned: a refused pairing leaves
-        // no trace but the reason.
-        refused.is_err()
+        pairing::host_one(&listener, &identity, "desk", &code)
     });
 
-    let stream = TcpStream::connect(address).expect("a connection");
-    let mut writing = stream.try_clone().expect("a handle");
-    let mut reading = BufReader::new(stream);
-    reading
-        .get_ref()
-        .set_read_timeout(Some(PATIENCE))
-        .expect("a timeout");
-
     let guest = Identity::generate();
-    let offer: Offer = receive(&mut reading).expect("the host offered");
-    send(
-        &mut writing,
-        &pairing::answer(&guest, "laptop", &wrong, &offer).0,
-    );
+    let joined = pairing::join(&address, &guest, "laptop", &wrong);
 
+    // The host says nothing back after a failed proof, and the guest is left
+    // holding an offer it cannot complete: that is the correct end of a refused
+    // pairing, whichever way the closed socket reaches it.
     assert!(
-        host.join().expect("the host thread"),
-        "the host should have refused a code it does not share"
+        matches!(
+            host.join().expect("the host thread"),
+            Err(WireError::Pairing(PairingError::WrongCode))
+        ),
+        "the host must refuse a code it does not share"
     );
-    // The host says nothing more: the guest is left holding an offer it cannot
-    // complete, which is the correct end of a refused pairing.
-    assert_eq!(receive::<Confirmed>(&mut reading), None);
+    assert!(joined.is_err(), "the guest must not think it paired");
 }

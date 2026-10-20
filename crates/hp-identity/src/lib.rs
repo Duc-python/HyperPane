@@ -23,7 +23,7 @@
 pub mod pairing;
 pub mod peers;
 
-pub use pairing::{Answer, Confirmed, Offer, PairingError};
+pub use pairing::{Answer, Confirmed, Offer, Paired, PairingError, WireError};
 pub use peers::{Peer, Peers, PeersError, Remembered};
 
 use std::path::Path;

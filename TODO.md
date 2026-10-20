@@ -175,9 +175,49 @@ green (tests, clippy, typecheck, and the app actually running).
       borrowing a pinned name is reported rather than refused: a reinstalled
       machine must be pairable again, and only a person can say which of the two
       they meant.
-- [ ] The app still cannot pair. The dock needs a code on one side and an address
-      plus the code on the other, and `peers.json` beside `trust.json`. Until then
-      a room is loopback and unauthenticated, which the panel says.
+- [x] The dock can pair two machines. One side shows a code and the address it
+      listens on; the other types or pastes them - a pasted
+      `192.168.1.4:51234 ABCD-EFGH-IJKL` fills both fields - and both write each
+      other into `peers.json` beside `trust.json`. The wait is polled once a
+      second, because the other machine is what ends it. Three things are worth
+      naming:
+      - the listener is polled, not blocked in `accept`, so a panel that is closed
+        stops the wait; a generation counter drops an answer that arrives after a
+        stop, instead of writing it into a panel that has moved on;
+      - the code is stretched on its own thread (600,000 rounds is seconds of
+        work), and the code itself is never written to the activity log - the
+        listening line names the port, nothing more;
+      - a wrong code from the other side does not end the wait: it is logged and
+        the hint says so. A mistyped code costs the guest a retry, not the host a
+        new code.
+      The four-message framing moved out of the socket test and into
+      `hp_identity::pairing::{host_over, join}`, so there is one implementation of
+      it rather than two.
+- [x] Verified by pairing two instances of the real app on one machine, each with
+      its own identity: `HYPERPANE_DATA_DIR` moves the data directory, which is
+      how a second instance gets a second key (two instances sharing one identity
+      would be refused as the same machine). The code was shown on one side,
+      pasted into the other, and both `peers.json` files ended up pinning the
+      other's id with both activity logs saying `pairing.paired` at the same
+      millisecond; the dock showed the peer and the list on both sides.
+      Two real defects came out of it. Windows hands a socket accepted from a
+      non-blocking listener the same non-blocking mode, so the host's opening
+      message failed and the guest saw a reset (`os error 10053`) - `host_over`
+      now sets the accepted socket to block before it waits, and a test polls a
+      non-blocking listener so the bug cannot come back. And a broken exchange
+      used to end the host's wait; it is now logged and the host keeps listening.
+- [ ] Pairing is groundwork, not a feature anybody can use yet: nothing consumes
+      `peers.json`. Rooms are still loopback and unauthenticated, which the panel
+      says in as many words. The next step is QUIC with the certificate bound to
+      the identity, then a room that only admits a pinned id.
+- [ ] A code is only as strong as the channel it travels on: this is not a PAKE,
+      so whoever records the exchange can still guess the code offline. That is
+      why it is sixty bits with a stretch, and why the module doc says so rather
+      than implying more.
+- [ ] Windows may ask once to let the app accept connections on a private
+      network. Pairing worked here without it because both ends were on this
+      machine; the prompt is expected the first time a real second machine
+      connects.
 - [ ] QUIC for the room, with the certificate bound to the identity above.
 - [ ] Standing access password, temporary grants (≤ 7 days)
 - [ ] My computers: open a pane on another machine

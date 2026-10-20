@@ -341,3 +341,120 @@ describe("the dock itself", () => {
     expect(screen.getByText(/loopback only/)).toBeTruthy();
   });
 });
+
+describe("pairing from the dock", () => {
+  /**
+   * `invoke` answers by command name here.
+   *
+   * The dock asks more than one question, and a bare `mockResolvedValue` would
+   * hand the peer list to the pairing card; this keeps each answer its own.
+   */
+  function answering(answers: Record<string, unknown>) {
+    invoke.mockImplementation((command: string) =>
+      Promise.resolve(command in answers ? answers[command] : undefined),
+    );
+  }
+
+  function renderDock() {
+    render(
+      <ControlRoom
+        view={null}
+        focusedPane={null}
+        paneLabel={label}
+        onView={noop}
+        onHide={noop}
+      />,
+    );
+  }
+
+  it("shows the code and the address the other machine needs", async () => {
+    answering({
+      pairing_status: { state: "idle" },
+      peers_list: { path: "peers.json", peers: [] },
+      pairing_host: {
+        state: "waiting",
+        code: "ABCDEFGHJKMN",
+        address: "192.168.1.4:51234",
+        hint: "on the same network as this machine",
+        hosting: true,
+      },
+    });
+    renderDock();
+
+    fireEvent.click(screen.getByRole("button", { name: "show a code" }));
+
+    expect(await screen.findByText("ABCD EFGH JKMN")).toBeTruthy();
+    expect(screen.getByText(/listening on 192\.168\.1\.4:51234/)).toBeTruthy();
+    expect(screen.getByText(/same network/)).toBeTruthy();
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("pairing_host");
+    });
+  });
+
+  it("fills both answers from the line the other side sent", () => {
+    answering({
+      pairing_status: { state: "idle" },
+      peers_list: { path: "peers.json", peers: [] },
+    });
+    renderDock();
+
+    fireEvent.click(screen.getByRole("button", { name: "use a code" }));
+    fireEvent.change(screen.getByLabelText("Their address"), {
+      target: { value: "10.0.0.7:4123 ABCD-EFGH-JKMN" },
+    });
+
+    expect(
+      (screen.getByLabelText("Their address") as HTMLInputElement).value,
+    ).toBe("10.0.0.7:4123");
+    expect(
+      (screen.getByLabelText("Pairing code") as HTMLInputElement).value,
+    ).toBe("ABCD EFGH JKMN");
+  });
+
+  it("says what it is waiting for, and can stop waiting", async () => {
+    answering({
+      pairing_status: {
+        state: "waiting",
+        code: null,
+        address: "10.0.0.7:4123",
+        hint: "asking the other machine",
+        hosting: false,
+      },
+      peers_list: { path: "peers.json", peers: [] },
+      pairing_cancel: { state: "idle" },
+    });
+    renderDock();
+
+    expect(await screen.findByText(/pairing with 10\.0\.0\.7:4123/)).toBeTruthy();
+    // A joining side has no code to show: the host has it.
+    expect(screen.queryByText(/^[A-Z0-9]{4} [A-Z0-9]{4}/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "stop" }));
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("pairing_cancel");
+    });
+  });
+
+  it("names the machines this one has already paired with", async () => {
+    const peer = {
+      id: "b".repeat(64),
+      short: "bbbbbbbb",
+      name: "laptop",
+      pairedAtMs: 1,
+      lastSeenMs: 2,
+    };
+    answering({
+      pairing_status: { state: "paired", peer },
+      peers_list: { path: "peers.json", peers: [peer] },
+    });
+    renderDock();
+
+    // The panel says it twice: once as what just happened, once in the list of
+    // machines this one trusts, with the short id beside each.
+    expect(await screen.findAllByText("laptop")).not.toHaveLength(0);
+    // The short id is what tells two machines with the same name apart.
+    expect(screen.getAllByText("bbbbbbbb").length).toBeGreaterThan(0);
+    expect(screen.getByText(/paired with/)).toBeTruthy();
+  });
+});
+

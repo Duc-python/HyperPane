@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -163,6 +164,13 @@ struct AppState {
     room_host: Arc<Mutex<Option<Host>>>,
     /// The room this instance has joined, if it has joined one.
     room_visit: Arc<Mutex<Option<Visit>>>,
+    /// What this instance is doing about pairing right now.
+    pairing: Arc<Mutex<Pairing>>,
+    /// The switch that stops a hosted pairing, so closing the panel is enough.
+    pairing_stop: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// Bumped whenever a pairing is started or stopped, so an answer that arrives
+    /// late cannot land in a panel that has moved on.
+    pairing_generation: Arc<AtomicU64>,
 }
 
 /// Where the app keeps the files it owns.
@@ -219,6 +227,9 @@ impl AppState {
             plugins: Arc::new(Mutex::new(None)),
             room_host: Arc::new(Mutex::new(None)),
             room_visit: Arc::new(Mutex::new(None)),
+            pairing: Arc::new(Mutex::new(Pairing::Idle)),
+            pairing_stop: Arc::new(Mutex::new(None)),
+            pairing_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -2098,7 +2109,7 @@ struct IdentityInfo {
 }
 
 /// One machine this one has paired with.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PeerInfo {
     id: String,
@@ -2144,18 +2155,336 @@ fn peers_list(state: State<'_, AppState>) -> Result<PeersView, String> {
 
     Ok(PeersView {
         path: state.peers_path.display().to_string(),
-        peers: peers
-            .list()
-            .into_iter()
-            .map(|peer| PeerInfo {
-                id: peer.id.as_str().to_string(),
-                short: peer.short().to_string(),
-                name: peer.name.clone(),
-                paired_at_ms: peer.paired_at_ms,
-                last_seen_ms: peer.last_seen_ms,
-            })
-            .collect(),
+        peers: peers.list().into_iter().map(peer_info).collect(),
     })
+}
+
+fn peer_info(peer: &hp_identity::peers::Peer) -> PeerInfo {
+    PeerInfo {
+        id: peer.id.as_str().to_string(),
+        short: peer.short().to_string(),
+        name: peer.name.clone(),
+        paired_at_ms: peer.paired_at_ms,
+        last_seen_ms: peer.last_seen_ms,
+    }
+}
+
+/// What this instance is doing about pairing right now.
+///
+/// Polled by the dock rather than pushed as an event: the panel already redraws
+/// every second, and a pairing is something a person watches rather than a stream
+/// of output. Nothing here is a secret - the code exists to be read out loud.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+enum Pairing {
+    Idle,
+    /// Listening for a guest, or waiting for a host to answer.
+    Waiting {
+        /// Present on the listening side: the guest already has the code.
+        code: Option<String>,
+        address: String,
+        /// What the address means, in words. A bare IP is not an answer for
+        /// somebody who has never paired two machines before.
+        hint: String,
+        /// Whether this side is the one showing a code.
+        hosting: bool,
+    },
+    Paired {
+        peer: PeerInfo,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+/// How long a hosted pairing waits before it gives up.
+///
+/// Five minutes is long enough to walk to the other machine and type twelve
+/// characters, and short enough that a code nobody used stops being valid.
+const PAIRING_PATIENCE: Duration = Duration::from_secs(300);
+
+/// Write one machine into `peers.json` and say what the list now knows.
+fn pin_peer(path: &Path, id: &hp_identity::DeviceId, name: &str) -> Result<PeerInfo, String> {
+    let mut peers = load_peers(path)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    peers.remember(id, name, now);
+    std::fs::write(path, peers.to_json())
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+
+    peers
+        .get(id)
+        .map(peer_info)
+        .ok_or_else(|| "the pairing was not written down".to_string())
+}
+
+/// Stop whatever pairing is in progress.
+///
+/// The generation is what makes stopping honest: a thread already past its last
+/// check still finishes, and its answer is dropped rather than shown.
+fn stop_pairing(state: &AppState) {
+    state.pairing_generation.fetch_add(1, Ordering::SeqCst);
+    if let Some(cancel) = state.pairing_stop.lock().take() {
+        cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The address another machine on this network can reach, if there is one.
+///
+/// No packet is sent: connecting a UDP socket only asks the routing table which
+/// local address would be used for that destination, which is exactly the
+/// interface a guest would arrive on.
+fn lan_address() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // TEST-NET-1: reserved for documentation, so nothing is ever sent.
+    socket.connect("192.0.2.1:9").ok()?;
+    let address = socket.local_addr().ok()?.ip();
+    if address.is_loopback() || address.is_unspecified() {
+        None
+    } else {
+        Some(address)
+    }
+}
+
+/// Show a code and wait for one machine to pair with it.
+#[tauri::command]
+fn pairing_host(state: State<'_, AppState>) -> Result<Pairing, String> {
+    stop_pairing(&state);
+
+    let identity = hp_identity::Identity::load_or_create(&state.identity_path)
+        .map_err(|error| error.to_string())?;
+    let code = hp_identity::PairingCode::generate();
+
+    let listener = std::net::TcpListener::bind("0.0.0.0:0").map_err(|error| error.to_string())?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    // A host must be able to stop waiting, and nothing can close a listener that
+    // another thread sits inside, so the wait is a poll.
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+
+    let (address, hint) = match lan_address() {
+        Some(ip) => (
+            format!("{ip}:{port}"),
+            "on the same network as this machine".to_string(),
+        ),
+        None => (
+            format!("127.0.0.1:{port}"),
+            "this machine only: no network address was found".to_string(),
+        ),
+    };
+
+    // The port and the moment, never the code: a code is a secret until it is
+    // used, and a log that outlives it is a log that leaks it.
+    let _ = state.audit.append(&AuditEntry::new(
+        "pairing.listening",
+        format!("showed a pairing code and listened on {address}"),
+    ));
+
+    let waiting = Pairing::Waiting {
+        code: Some(code.as_str().to_string()),
+        address,
+        hint,
+        hosting: true,
+    };
+    *state.pairing.lock() = waiting.clone();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.pairing_stop.lock() = Some(Arc::clone(&cancel));
+
+    let generation = state.pairing_generation.load(Ordering::SeqCst);
+    let expected = Arc::clone(&state.pairing_generation);
+    let status = Arc::clone(&state.pairing);
+    let peers_path = state.peers_path.clone();
+    let audit = state.audit.path().to_path_buf();
+    let name = account_name();
+
+    thread::Builder::new()
+        .name("hp-pair-host".to_string())
+        .spawn(move || {
+            let log = AuditLog::new(&audit);
+            let deadline = Instant::now() + PAIRING_PATIENCE;
+            let current = || expected.load(Ordering::SeqCst) == generation;
+
+            loop {
+                if cancel.load(Ordering::SeqCst) || !current() {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    if current() {
+                        *status.lock() = Pairing::Failed {
+                            reason: "nobody arrived before the wait ran out".to_string(),
+                        };
+                    }
+                    return;
+                }
+
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        match hp_identity::pairing::host_over(stream, &identity, &name, &code) {
+                            Ok(paired) => {
+                                let answer = pin_peer(&peers_path, &paired.id, &paired.name);
+                                if !current() {
+                                    return;
+                                }
+                                *status.lock() = match answer {
+                                    Ok(peer) => {
+                                        let _ = log.append(&AuditEntry::new(
+                                            "pairing.paired",
+                                            format!("paired with {} ({})", peer.name, peer.short),
+                                        ));
+                                        Pairing::Paired { peer }
+                                    }
+                                    Err(reason) => Pairing::Failed { reason },
+                                };
+                                return;
+                            }
+                            Err(hp_identity::pairing::WireError::Pairing(
+                                hp_identity::pairing::PairingError::WrongCode,
+                            )) => {
+                                // A mistyped code on the other side should not cost
+                                // the person a new code: say what happened and keep
+                                // listening.
+                                let _ = log.append(&AuditEntry::new(
+                                    "pairing.refused",
+                                    "a machine offered the wrong code",
+                                ));
+                                if let Pairing::Waiting { hint, .. } = &mut *status.lock() {
+                                    *hint = "a machine tried, and the code did not match - still listening".to_string();
+                                }
+                            }
+                            Err(hp_identity::pairing::WireError::Pairing(
+                                hp_identity::pairing::PairingError::SameMachine,
+                            )) => {
+                                if let Pairing::Waiting { hint, .. } = &mut *status.lock() {
+                                    *hint = "that machine is this one - pair a different machine".to_string();
+                                }
+                            }
+                            Err(error) => {
+                                // A guest that vanished mid-handshake is not the
+                                // end of the wait: the code is still good, and
+                                // the person is still standing there.
+                                let _ = log.append(&AuditEntry::new(
+                                    "pairing.failed",
+                                    format!("an exchange broke: {error}"),
+                                ));
+                                if let Pairing::Waiting { hint, .. } = &mut *status.lock() {
+                                    *hint = format!("a machine connected and the exchange broke: {error}");
+                                }
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(150));
+                    }
+                    Err(error) => {
+                        if current() {
+                            *status.lock() = Pairing::Failed {
+                                reason: error.to_string(),
+                            };
+                        }
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(waiting)
+}
+
+/// Pair with a host that is showing a code.
+#[tauri::command]
+fn pairing_join(
+    address: String,
+    code: String,
+    state: State<'_, AppState>,
+) -> Result<Pairing, String> {
+    stop_pairing(&state);
+
+    let address = address.trim().to_string();
+    if address.is_empty() {
+        return Err("an address looks like 192.168.1.4:51234".to_string());
+    }
+    // A typo is refused now, not after the stretch the code pays for.
+    let parsed = hp_identity::PairingCode::parse(&code).map_err(|error| error.to_string())?;
+    let identity = hp_identity::Identity::load_or_create(&state.identity_path)
+        .map_err(|error| error.to_string())?;
+
+    let waiting = Pairing::Waiting {
+        code: None,
+        address: address.clone(),
+        hint: "asking the other machine - the code is stretched on purpose, so this takes a few seconds".to_string(),
+        hosting: false,
+    };
+    *state.pairing.lock() = waiting.clone();
+
+    let generation = state.pairing_generation.load(Ordering::SeqCst);
+    let expected = Arc::clone(&state.pairing_generation);
+    let status = Arc::clone(&state.pairing);
+    let peers_path = state.peers_path.clone();
+    let audit = state.audit.path().to_path_buf();
+    let name = account_name();
+
+    thread::Builder::new()
+        .name("hp-pair-join".to_string())
+        .spawn(move || {
+            let log = AuditLog::new(&audit);
+            let current = || expected.load(Ordering::SeqCst) == generation;
+
+            match hp_identity::pairing::join(&address, &identity, &name, &parsed) {
+                Ok(paired) => {
+                    let answer = pin_peer(&peers_path, &paired.id, &paired.name);
+                    if !current() {
+                        return;
+                    }
+                    *status.lock() = match answer {
+                        Ok(peer) => {
+                            let _ = log.append(&AuditEntry::new(
+                                "pairing.paired",
+                                format!("paired with {} ({})", peer.name, peer.short),
+                            ));
+                            Pairing::Paired { peer }
+                        }
+                        Err(reason) => Pairing::Failed { reason },
+                    };
+                }
+                Err(error) => {
+                    let _ = log.append(&AuditEntry::new(
+                        "pairing.failed",
+                        format!("could not pair with {address}: {error}"),
+                    ));
+                    if current() {
+                        *status.lock() = Pairing::Failed {
+                            reason: error.to_string(),
+                        };
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(waiting)
+}
+
+/// What the dock should say about pairing.
+#[tauri::command]
+fn pairing_status(state: State<'_, AppState>) -> Pairing {
+    state.pairing.lock().clone()
+}
+
+/// Stop a pairing. The dock calls this when it is dismissed or the person leaves.
+#[tauri::command]
+fn pairing_cancel(state: State<'_, AppState>) -> Pairing {
+    stop_pairing(&state);
+    let idle = Pairing::Idle;
+    *state.pairing.lock() = idle.clone();
+    idle
 }
 
 fn load_peers(path: &Path) -> Result<hp_identity::Peers, String> {
@@ -2205,7 +2534,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let directory = app.path().app_data_dir()?;
+            // Where this instance keeps everything it owns: its session, its
+            // identity, the machines it has paired with.
+            //
+            // `HYPERPANE_DATA_DIR` moves it, because the identity lives in there
+            // and two instances that share one identity cannot pair with each
+            // other - which is exactly what testing a pairing on one machine
+            // needs. A portable run beside the executable wants the same thing.
+            let directory = match std::env::var_os("HYPERPANE_DATA_DIR") {
+                Some(custom) if !custom.is_empty() => PathBuf::from(custom),
+                _ => app.path().app_data_dir()?,
+            };
             std::fs::create_dir_all(&directory)?;
             let store = SessionStore::new(directory.join("session.json"));
 
@@ -2266,6 +2605,10 @@ pub fn run() {
             room_state,
             identity_info,
             peers_list,
+            pairing_host,
+            pairing_join,
+            pairing_status,
+            pairing_cancel,
             teams_list,
             team_plan,
             team_start,

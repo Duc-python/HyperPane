@@ -21,6 +21,9 @@
 //! down where a reader can check the claim.
 
 use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::time::Duration;
 use thiserror::Error;
 
 use crate::{nonce, DeviceId, Identity, PairingCode, PairingKey};
@@ -175,6 +178,153 @@ fn transcript(offer: &Offer, answer: &Answer) -> Vec<u8> {
     }
 
     bytes
+}
+
+/// How long either end waits for the other before calling the exchange stuck.
+///
+/// Generous on purpose. The guest stretches a sixty-bit code with 600,000 rounds
+/// of PBKDF2 by design - that is seconds of work - so a short wait would turn a
+/// working pairing into a failure on a busy machine. It is still bounded, so a
+/// real mistake fails instead of hanging.
+pub const PATIENCE: Duration = Duration::from_secs(30);
+
+/// Who a pairing turned out to be with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paired {
+    pub id: DeviceId,
+    pub name: String,
+}
+
+#[derive(Debug, Error)]
+pub enum WireError {
+    #[error("networking: {0}")]
+    Network(#[from] std::io::Error),
+    #[error("the other end sent something this build cannot read: {0}")]
+    Unreadable(#[from] serde_json::Error),
+    #[error("the other end left before the pairing finished")]
+    HungUp,
+    #[error(transparent)]
+    Pairing(#[from] PairingError),
+}
+
+/// One message, one line.
+///
+/// JSON lines rather than a length prefix because the exchange is four messages
+/// between two people's machines: a reader can watch it with `nc` and check the
+/// claim in the module doc without a decoder.
+fn send<T: Serialize>(stream: &mut impl Write, message: &T) -> Result<(), WireError> {
+    let mut line = serde_json::to_string(message)?;
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn receive<T: serde::de::DeserializeOwned>(reader: &mut impl BufRead) -> Result<T, WireError> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(WireError::HungUp);
+    }
+    Ok(serde_json::from_str(line.trim_end())?)
+}
+
+/// Listen, and pair with the first guest that arrives.
+///
+/// Returns who it was. The caller decides what to do with that - the app pins it
+/// - so a library user is never made to write a file it did not ask for.
+pub fn host_one(
+    listener: &TcpListener,
+    identity: &Identity,
+    name: &str,
+    code: &PairingCode,
+) -> Result<Paired, WireError> {
+    let (stream, _) = listener.accept()?;
+    host_over(stream, identity, name, code)
+}
+
+/// Pair over a connection that is already open.
+///
+/// Separate from [`host_one`] because whoever waits for the guest usually needs
+/// to be able to stop waiting - a panel that can be closed, a deadline - and a
+/// blocking `accept` inside this function would take that choice away.
+pub fn host_over(
+    stream: TcpStream,
+    identity: &Identity,
+    name: &str,
+    code: &PairingCode,
+) -> Result<Paired, WireError> {
+    // A listener that polls for a guest is non-blocking, and Windows hands the
+    // accepted socket the same mode. This handshake waits on purpose, with its
+    // own deadline below, so it says so before writing anything.
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(PATIENCE))?;
+    stream.set_write_timeout(Some(PATIENCE))?;
+
+    let mut writing = stream.try_clone()?;
+    let mut reading = BufReader::new(stream);
+
+    let opening = offer(identity, name);
+    send(&mut writing, &opening)?;
+
+    let reply: Answer = receive(&mut reading)?;
+    // Nothing is written back when the proof fails: a refused pairing leaves no
+    // trace but the reason, and the guest learns nothing it did not already have.
+    let confirmed = confirm(code, &opening, &reply)?;
+    send(&mut writing, &confirmed)?;
+
+    let (id, name) = reply.guest();
+    Ok(Paired {
+        id: id.clone(),
+        name: name.to_string(),
+    })
+}
+
+/// Pair with a host that is listening at `address` (`host:port`).
+pub fn join(
+    address: &str,
+    identity: &Identity,
+    name: &str,
+    code: &PairingCode,
+) -> Result<Paired, WireError> {
+    let stream = connect(address)?;
+    stream.set_read_timeout(Some(PATIENCE))?;
+    stream.set_write_timeout(Some(PATIENCE))?;
+
+    let mut writing = stream.try_clone()?;
+    let mut reading = BufReader::new(stream);
+
+    let opening: Offer = receive(&mut reading)?;
+    let (reply, key) = answer(identity, name, code, &opening);
+    send(&mut writing, &reply)?;
+
+    let confirmed: Confirmed = receive(&mut reading)?;
+    accept(&key, &opening, &reply, &confirmed)?;
+
+    let (id, name) = opening.host();
+    Ok(Paired {
+        id: id.clone(),
+        name: name.to_string(),
+    })
+}
+
+/// Connect with a timeout, so a wrong address is a message rather than a minute
+/// of a panel that says "pairing" and will not stop saying it.
+fn connect(address: &str) -> Result<TcpStream, WireError> {
+    let mut last = None;
+    for candidate in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&candidate, Duration::from_secs(5)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = Some(error),
+        }
+    }
+
+    Err(match last {
+        Some(error) => WireError::Network(error),
+        None => WireError::Network(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "an address is host:port",
+        )),
+    })
 }
 
 /// Both nonces, in the order they were said.

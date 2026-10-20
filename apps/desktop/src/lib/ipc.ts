@@ -490,6 +490,38 @@ export const identityInfo = () => invoke<IdentityInfo>("identity_info");
 
 export const peersList = () => invoke<PeersView>("peers_list");
 
+/**
+ * What this machine is doing about pairing, as the app last said.
+ *
+ * Polled rather than pushed: the dock already redraws once a second, and a
+ * pairing is a thing a person watches. The code is not a secret from the person
+ * reading it - it exists to be read out loud - so it travels in the clear here.
+ */
+export type PairingState =
+  | { state: "idle" }
+  | {
+      state: "waiting";
+      /** Present on the listening side: the guest already has the code. */
+      code: string | null;
+      address: string;
+      /** What the address means, in words. */
+      hint: string;
+      /** Whether this side is the one showing a code. */
+      hosting: boolean;
+    }
+  | { state: "paired"; peer: PeerInfo }
+  | { state: "failed"; reason: string };
+
+export const pairingHost = () => invoke<PairingState>("pairing_host");
+
+/** Pair with a machine that is showing `code` at `address`. Returns at once. */
+export const pairingJoin = (address: string, code: string) =>
+  invoke<PairingState>("pairing_join", { address, code });
+
+export const pairingStatus = () => invoke<PairingState>("pairing_status");
+
+export const pairingCancel = () => invoke<PairingState>("pairing_cancel");
+
 export type Archetype =
   | "reviewer"
   | "pipeline"
