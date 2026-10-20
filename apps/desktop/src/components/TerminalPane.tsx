@@ -233,7 +233,9 @@ export function TerminalPane({
       <header className="flex h-7 shrink-0 items-center gap-2 border-b border-line/60 bg-surface px-2">
         <PaneGlyph tone={tone} label={TONE_LABEL[tone]} />
         <span
-          className="shrink-0 truncate text-[11px] text-ink"
+          // The title gives way first: the chips beside it are what the header
+          // is for, and a long agent title used to push them off the edge.
+          className="min-w-0 shrink truncate text-[11px] text-ink"
           title={displayTitle}
         >
           {displayTitle}

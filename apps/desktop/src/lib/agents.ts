@@ -66,7 +66,11 @@ export function describeResult(result: RunResult): string {
   if (result.status === "blocked") return "blocked";
 
   const files =
-    result.files.length === 1 ? "1 file" : `${result.files.length} files`;
+    result.files.length === 0
+      ? "no files"
+      : result.files.length === 1
+        ? "1 file"
+        : `${result.files.length} files`;
   const tests = result.tests === "none" ? "" : ` · tests ${result.tests}`;
   return `${result.status} · ${files}${tests}`;
 }
