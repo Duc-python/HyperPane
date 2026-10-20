@@ -355,7 +355,11 @@ impl PaneManager {
                             if let Some(path) = directories.push(&chunk) {
                                 push(&reader_stream, PtyEvent::Cwd { path });
                             }
-                            if let Some(mark) = prompts.push(&chunk) {
+                            // Every mark in the chunk, in order: the end of one
+                            // command and the start of the next prompt arrive
+                            // together often enough that dropping one is a bug
+                            // that only shows up on some machines.
+                            for mark in prompts.push(&chunk) {
                                 let (prompt_mark, exit_code) = match mark {
                                     PromptMark::Start => (PromptKind::PromptStart, None),
                                     PromptMark::End => (PromptKind::PromptEnd, None),
@@ -633,13 +637,19 @@ struct Osc133Scanner {
 }
 
 impl Osc133Scanner {
-    /// The last mark in this chunk, if any.
-    fn push(&mut self, chunk: &str) -> Option<PromptMark> {
+    /// Every mark in this chunk, in the order it arrived.
+    ///
+    /// All of them, not the last: a shell emits the end of one command and the
+    /// start of the next prompt back to back, so they land in one read whenever
+    /// the scheduling puts them there. Keeping only the last lost the command's
+    /// exit status and left the pane saying a finished command was still running
+    /// - a race whose symptom depended on how the bytes were split.
+    fn push(&mut self, chunk: &str) -> Vec<PromptMark> {
         self.extractor
             .drain(chunk, OSC133_PREFIX)
             .into_iter()
             .filter_map(|payload| parse_prompt_mark(&payload))
-            .next_back()
+            .collect()
     }
 }
 
@@ -921,11 +931,26 @@ mod tests {
     #[test]
     fn reads_each_prompt_mark() {
         let mut scanner = Osc133Scanner::default();
-        assert_eq!(scanner.push("\x1b]133;A\x07"), Some(PromptMark::Start));
-        assert_eq!(scanner.push("\x1b]133;B\x07"), Some(PromptMark::End));
+        assert_eq!(scanner.push("\x1b]133;A\x07"), vec![PromptMark::Start]);
+        assert_eq!(scanner.push("\x1b]133;B\x07"), vec![PromptMark::End]);
         assert_eq!(
             scanner.push("\x1b]133;C\x1b\\"),
-            Some(PromptMark::CommandStart)
+            vec![PromptMark::CommandStart]
+        );
+    }
+
+    /// The shell emits the end of one command and the start of the next prompt
+    /// back to back, so one read can hold both. Keeping only the last mark lost
+    /// the command's exit status and left a finished command looking like it was
+    /// still running - a race whose symptom depended on scheduling.
+    #[test]
+    fn keeps_every_mark_that_arrives_in_one_read() {
+        let mut scanner = Osc133Scanner::default();
+        let marks = scanner.push("\x1b]133;D;1\x07\x1b]7;file://h/tmp\x07\x1b]133;A\x07");
+        assert_eq!(
+            marks,
+            vec![PromptMark::CommandEnd(Some(1)), PromptMark::Start],
+            "the directory report is not a mark, and neither mark may be dropped"
         );
     }
 
@@ -934,11 +959,11 @@ mod tests {
         let mut scanner = Osc133Scanner::default();
         assert_eq!(
             scanner.push("\x1b]133;D;0\x07"),
-            Some(PromptMark::CommandEnd(Some(0)))
+            vec![PromptMark::CommandEnd(Some(0))]
         );
         assert_eq!(
             scanner.push("\x1b]133;D;130\x07"),
-            Some(PromptMark::CommandEnd(Some(130)))
+            vec![PromptMark::CommandEnd(Some(130))]
         );
     }
 
@@ -947,30 +972,30 @@ mod tests {
         let mut scanner = Osc133Scanner::default();
         assert_eq!(
             scanner.push("\x1b]133;D\x07"),
-            Some(PromptMark::CommandEnd(None))
+            vec![PromptMark::CommandEnd(None)]
         );
     }
 
     #[test]
     fn completes_a_prompt_mark_split_across_two_reads() {
         let mut scanner = Osc133Scanner::default();
-        assert_eq!(scanner.push("out\x1b]13"), None);
+        assert!(scanner.push("out\x1b]13").is_empty());
         assert_eq!(
-            scanner.push("3;D;1\x07more").as_ref(),
-            Some(&PromptMark::CommandEnd(Some(1)))
+            scanner.push("3;D;1\x07more"),
+            vec![PromptMark::CommandEnd(Some(1))]
         );
     }
 
     #[test]
     fn a_directory_report_is_not_a_prompt_mark() {
         let mut scanner = Osc133Scanner::default();
-        assert_eq!(scanner.push("\x1b]7;file://h/tmp\x07"), None);
+        assert!(scanner.push("\x1b]7;file://h/tmp\x07").is_empty());
     }
 
     #[test]
     fn an_unknown_mark_is_ignored() {
         let mut scanner = Osc133Scanner::default();
-        assert_eq!(scanner.push("\x1b]133;Z\x07"), None);
+        assert!(scanner.push("\x1b]133;Z\x07").is_empty());
     }
 
     /// The event crosses a JSON boundary into TypeScript, which reads
