@@ -22,7 +22,8 @@ pub enum RunStatus {
 
 impl RunStatus {
     fn parse(value: &str) -> Option<Self> {
-        match value {
+        // A border or a full stop can sit against the word.
+        match value.trim_end_matches(|c: char| !c.is_alphanumeric()) {
             "done" => Some(Self::Done),
             "failed" => Some(Self::Failed),
             "blocked" => Some(Self::Blocked),
@@ -43,7 +44,7 @@ pub enum TestOutcome {
 
 impl TestOutcome {
     fn parse(value: &str) -> Option<Self> {
-        match value {
+        match value.trim_end_matches(|c: char| !c.is_alphanumeric()) {
             "pass" => Some(Self::Pass),
             "fail" => Some(Self::Fail),
             "none" => Some(Self::None),
@@ -69,23 +70,46 @@ pub struct RunResult {
 /// unknown state.
 pub fn parse_result_line(line: &str) -> Option<RunResult> {
     let text = strip_ansi(line);
-    let rest = text.trim().strip_prefix("RESULT")?;
+    parse_fields(result_body(&text)?)
+}
 
+/// The text after `RESULT` on a line that starts a report.
+///
+/// A terminal draws its own frame around what an agent says - a box border, a
+/// quote marker, a bullet. Those lead the line, so the report is found after
+/// them, but only when everything before it is punctuation: prose that happens
+/// to say "RESULT" mid-sentence stays prose.
+fn result_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let start = trimmed.find("RESULT")?;
+    if !trimmed[..start].chars().all(|c| !c.is_alphanumeric()) {
+        return None;
+    }
+    match trimmed[start + "RESULT".len()..].chars().next() {
+        None => Some(""),
+        Some(c) if c.is_whitespace() => Some(trimmed[start + "RESULT".len()..].trim()),
+        // `RESULTING`, `RESULTS:` - words, not reports.
+        Some(_) => None,
+    }
+}
+
+/// Read the `key=value` fields of a report.
+fn parse_fields(rest: &str) -> Option<RunResult> {
     let mut status: Option<RunStatus> = None;
     let mut files: Vec<String> = Vec::new();
     let mut tests: Option<TestOutcome> = None;
 
     for token in rest.split_whitespace() {
-        let Some((key, value)) = token.split_once('=') else {
-            continue;
-        };
+        let (key, value) = field(token);
         match key {
             "status" => status = RunStatus::parse(value),
             "files" => {
                 files = value
                     .split(',')
-                    .map(str::trim)
-                    .filter(|entry| !entry.is_empty())
+                    .map(|entry| entry.trim_matches(is_frame).trim())
+                    // "none" is how a report says it changed nothing; it is not
+                    // a file called none.
+                    .filter(|entry| !entry.is_empty() && !is_none_word(entry))
                     .map(str::to_string)
                     .collect();
             }
@@ -101,6 +125,27 @@ pub fn parse_result_line(line: &str) -> Option<RunResult> {
     })
 }
 
+/// One `key=value` field, with the frame's punctuation taken off its edges.
+///
+/// A box border or a trailing quote is part of the drawing, not of the answer.
+fn field(token: &str) -> (&str, &str) {
+    let clean = token.trim_matches(is_frame);
+    match clean.split_once('=') {
+        Some((key, value)) => (key, value.trim_matches(is_frame)),
+        None => (clean, ""),
+    }
+}
+
+/// The word a report uses for an empty field.
+fn is_none_word(value: &str) -> bool {
+    value.eq_ignore_ascii_case("none") || value == "-"
+}
+
+/// Characters a terminal uses to frame text, which no field needs at its edge.
+fn is_frame(c: char) -> bool {
+    !c.is_alphanumeric() && !matches!(c, '/' | '\\' | '.' | '_' | '-' | '=' | ',')
+}
+
 /// Finds result lines in a stream of terminal output.
 ///
 /// Output arrives in arbitrary chunks, so a line can be split across two reads.
@@ -108,21 +153,52 @@ pub fn parse_result_line(line: &str) -> Option<RunResult> {
 #[derive(Default)]
 pub struct ResultScanner {
     pending: String,
+    /// A report that has started but does not have everything a report needs.
+    ///
+    /// Agents print the report as a block - `RESULT` and then one field per
+    /// line, often inside the box their own UI draws - even when they were asked
+    /// for one line. Reading line by line found nothing in that, so the lines
+    /// are kept here until the report is complete or something that is not a
+    /// field ends it.
+    block: Option<String>,
 }
 
 impl ResultScanner {
     /// A result line is short; anything longer is ordinary output.
     const MAX_PENDING: usize = 8 * 1024;
+    /// A report is a handful of short fields. Anything longer is not one.
+    const MAX_BLOCK: usize = 1024;
 
-    /// Feed output. Returns the last result line completed by this chunk.
+    /// Feed output. Returns the last result completed by this chunk.
     pub fn push(&mut self, chunk: &str) -> Option<RunResult> {
         self.pending.push_str(chunk);
         let mut latest = None;
 
         while let Some(newline) = self.pending.find('\n') {
-            let line: String = self.pending.drain(..=newline).collect();
-            if let Some(result) = parse_result_line(&line) {
-                latest = Some(result);
+            let raw: String = self.pending.drain(..=newline).collect();
+            let line = strip_ansi(&raw);
+            let trimmed = line.trim();
+
+            if let Some(block) = self.block.as_mut() {
+                if is_field_line(trimmed) {
+                    block.push(' ');
+                    block.push_str(trimmed);
+                    if is_complete(block) || block.len() > Self::MAX_BLOCK {
+                        latest = self.finish().or(latest);
+                    }
+                    continue;
+                }
+                // Something that is not a field ends the report: a blank line,
+                // a prompt, the next line of the conversation.
+                latest = self.finish().or(latest);
+            }
+
+            if let Some(rest) = result_body(trimmed) {
+                if is_complete(rest) {
+                    latest = parse_fields(rest).or(latest);
+                } else {
+                    self.block = Some(rest.to_string());
+                }
             }
         }
 
@@ -131,6 +207,25 @@ impl ResultScanner {
         }
         latest
     }
+
+    /// End the open report, if there is one.
+    fn finish(&mut self) -> Option<RunResult> {
+        parse_fields(&self.block.take()?)
+    }
+}
+
+/// Whether a line is one more field of a report that is already open.
+fn is_field_line(line: &str) -> bool {
+    !line.is_empty() && line.contains('=') && !line.contains("RESULT")
+}
+
+/// Whether a report has every part the app asks for.
+///
+/// Status alone is not enough to stop reading: the block form reaches it first
+/// and would otherwise be reported with no files and no tests. A report that
+/// never gets all three still ends at the next line that is not a field.
+fn is_complete(block: &str) -> bool {
+    block.contains("status=") && block.contains("files=") && block.contains("tests=")
 }
 
 /// Remove ANSI escape sequences.
@@ -214,6 +309,15 @@ mod tests {
     }
 
     #[test]
+    fn a_report_that_changed_nothing_names_no_files() {
+        // The instruction offers "none" for an empty list; that is not a path.
+        let result =
+            parse_result_line("RESULT status=done files=none tests=none").expect("a report");
+        assert!(result.files.is_empty());
+        assert_eq!(result.tests, TestOutcome::None);
+    }
+
+    #[test]
     fn an_unknown_field_is_ignored() {
         let result =
             parse_result_line("RESULT status=done extra=whatever files=a.ts").expect("a report");
@@ -226,6 +330,48 @@ mod tests {
         let result = parse_result_line(line).expect("a report");
         assert_eq!(result.status, RunStatus::Done);
         assert_eq!(result.files, ["a.ts"]);
+    }
+
+    #[test]
+    fn a_box_the_terminal_drew_is_not_part_of_the_answer() {
+        // A CLI draws its own frame; the frame is not a field.
+        let result =
+            parse_result_line("│ RESULT status=done files=a.ts │ tests=pass │").expect("a report");
+        assert_eq!(result.status, RunStatus::Done);
+        assert_eq!(result.files, ["a.ts"]);
+        assert_eq!(result.tests, TestOutcome::Pass);
+    }
+
+    #[test]
+    fn prose_that_mentions_a_result_is_not_a_report() {
+        assert!(parse_result_line("The RESULT status=done is what we want").is_none());
+        assert!(parse_result_line("RESULTS: all green").is_none());
+    }
+
+    #[test]
+    fn a_report_written_as_a_block_is_still_a_report() {
+        // What a real opencode run printed when asked for one line: the word,
+        // then one field per line, inside its own box.
+        let mut scanner = ResultScanner::default();
+        assert!(scanner.push("│ RESULT │\n").is_none());
+        assert!(scanner.push("│ status=done │\n").is_none());
+        assert!(scanner.push("│ files=a.ts,b.ts │\n").is_none());
+
+        let result = scanner.push("│ tests=pass │\n").expect("a report");
+        assert_eq!(result.status, RunStatus::Done);
+        assert_eq!(result.files, ["a.ts", "b.ts"]);
+        assert_eq!(result.tests, TestOutcome::Pass);
+    }
+
+    #[test]
+    fn a_block_that_never_reaches_a_file_list_still_reports() {
+        let mut scanner = ResultScanner::default();
+        assert!(scanner.push("RESULT status=blocked\n").is_none());
+        assert!(scanner.push("reason=no network\n").is_none());
+        // A blank line is what ends the report.
+        let result = scanner.push("\n").expect("a report");
+        assert_eq!(result.status, RunStatus::Blocked);
+        assert!(result.files.is_empty());
     }
 
     #[test]

@@ -55,6 +55,12 @@ green (tests, clippy, typecheck, and the app actually running).
       so an agent whose task is typed into its prompt does not submit at the
       first newline. Team briefs always asked; single runs never did, so their
       pane had nothing to show.
+- [x] The claim reader takes the report in the shape agents actually print it:
+      `RESULT` and then one field per line, often inside the box the CLI draws.
+      A real run answered the one-line request with exactly that, and a
+      line-oriented reader found nothing. A block is read until it has status,
+      files and tests, or until a line that is not a field ends it; frame
+      characters are not part of the answer; `files=none` is no files.
 - [x] Worktrees: create on `agent/<8>`, reuse, remove without deleting the branch
 - [x] Caps: live agent panes and spawn rate, enforced behind one command
 - [x] Activity log: append-only JSON lines, refusals included

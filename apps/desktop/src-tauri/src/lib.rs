@@ -862,7 +862,7 @@ fn with_report_line(task: &str) -> String {
     }
     format!(
         "{trimmed} When you are done, end with one line: \
-         RESULT status=done|failed|blocked files=<paths you changed> \
+         RESULT status=done|failed|blocked files=<paths you changed, or none> \
          tests=pass|fail|none"
     )
 }
@@ -2637,7 +2637,7 @@ mod tests {
         assert!(task.starts_with("find the bug "), "{task}");
         assert!(
             task.ends_with(
-                "RESULT status=done|failed|blocked files=<paths you changed> \
+                "RESULT status=done|failed|blocked files=<paths you changed, or none> \
                  tests=pass|fail|none"
             ),
             "{task}"
