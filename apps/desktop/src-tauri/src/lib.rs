@@ -1132,7 +1132,11 @@ fn wave_report(runs: &HashMap<String, RunState>, panes: &[String]) -> WaveReport
         .iter()
         .map(|pane| {
             let state = match runs.get(pane) {
-                Some(run) => (run.result.clone(), run.exit.is_some()),
+                // The same end-of-turn rule as `running_panes`: opencode stays
+                // at its prompt after a task, and a member whose process is
+                // alive but which reported and went quiet has still finished -
+                // its findings file is complete and can be read.
+                Some(run) => (run.result.clone(), run.finished()),
                 // A pane that is gone cannot still be working.
                 None => (None, true),
             };
@@ -2785,6 +2789,18 @@ mod wave_tests {
         gone.exit = Some(0);
         let runs = HashMap::from([("p1".to_string(), gone)]);
         assert_eq!(running_panes(&runs, &["p1".to_string()]), 0);
+    }
+
+    #[test]
+    fn a_reported_member_is_finished_even_though_its_process_is_alive() {
+        // The findings of a member that is sitting at its prompt have to be
+        // read, or the next wave is asked to answer nothing.
+        let runs = HashMap::from([(
+            "p1".to_string(),
+            member(true, Some(Duration::from_secs(60))),
+        )]);
+        let report = super::wave_report(&runs, &["p1".to_string()]);
+        assert!(report["p1"].1, "a reported member is finished");
     }
 
     #[test]
