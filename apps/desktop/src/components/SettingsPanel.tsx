@@ -3,6 +3,7 @@ import {
   identityInfo,
   peersList,
   pluginsList,
+  revealPath,
   type AppInfo,
   type IdentityInfo,
   type PeersView,
@@ -163,22 +164,42 @@ export function SettingsPanel({
             Files
           </h3>
           <dl className="mt-1">
-            <Row label="Session" note="layout, panes and profiles">
+            <Row label="Session" note="layout, panes and profiles" path={sessionFile}>
               {sessionFile ?? "not known yet"}
             </Row>
-            <Row label="Activity log" note="append-only JSON lines, refusals included">
+            <Row
+              label="Activity log"
+              note="append-only JSON lines, refusals included"
+              path={auditFile}
+            >
               {auditFile ?? "not known yet"}
             </Row>
-            <Row label="MCP servers" note="declared in this file; nothing in it starts on its own">
+            <Row
+              label="MCP servers"
+              note="declared in this file; nothing in it starts on its own"
+              path={plugins?.path}
+            >
               {plugins?.path ?? (problem ? "could not be read" : "reading…")}
             </Row>
-            <Row label="Approvals" note="the command, arguments and tools that were read and accepted">
+            <Row
+              label="Approvals"
+              note="the command, arguments and tools that were read and accepted"
+              path={plugins?.trustPath}
+            >
               {plugins?.trustPath ?? (problem ? "could not be read" : "reading…")}
             </Row>
-            <Row label="Identity file" note="this machine's private key; the account is what protects it">
+            <Row
+              label="Identity file"
+              note="this machine's private key; the account is what protects it"
+              path={identity?.path}
+            >
               {identity?.path ?? (identityProblem ? "could not be read" : "reading…")}
             </Row>
-            <Row label="Trusted machines" note="who this machine has paired with">
+            <Row
+              label="Trusted machines"
+              note="who this machine has paired with"
+              path={peers?.path}
+            >
               {peers?.path ?? (identityProblem ? "could not be read" : "reading…")}
             </Row>
           </dl>
@@ -195,10 +216,9 @@ export function SettingsPanel({
             <p className="mt-1 text-[11px] text-ink-faint">reading…</p>
           ) : peers.peers.length === 0 ? (
             <p className="mt-1 text-[11px] leading-5 text-ink-faint">
-              None yet. Pairing is the next step: one machine shows a code, the
-              other types it, and the name above is remembered here. Until then a
-              room is loopback and unauthenticated, and nothing on that list is
-              trusted.
+              None yet. Open the control room, show a code on one machine and type
+              it on the other; what each machine learns is the other's key, and it
+              is remembered in the file above.
             </p>
           ) : (
             <ul className="mt-1">
@@ -241,10 +261,13 @@ export function SettingsPanel({
 function Row({
   label,
   note,
+  path,
   children,
 }: {
   label: string;
   note?: string | undefined;
+  /** The file this row names, when there is one to show in a file manager. */
+  path?: string | null | undefined;
   children: ReactNode;
 }) {
   return (
@@ -253,10 +276,27 @@ function Row({
         {label}
       </dt>
       <dd className="min-w-0">
-        {/* Selectable: a path is the one thing on this page somebody wants to
-            copy somewhere else. */}
-        <span className="block font-mono text-[11px] break-all select-text text-ink-muted">
-          {children}
+        <span className="flex items-start gap-1.5">
+          {/* Selectable: a path is the one thing on this page somebody wants to
+              copy somewhere else. */}
+          <span className="block min-w-0 flex-1 font-mono text-[11px] break-all select-text text-ink-muted">
+            {children}
+          </span>
+          {path ? (
+            <button
+              type="button"
+              aria-label={`Reveal ${label.toLowerCase()}`}
+              title={`show ${path} in the file manager`}
+              onClick={() => {
+                // Nothing to say if it fails: the file manager is the one that
+                // knows why, and it already said so in its own window.
+                void revealPath(path).catch(() => undefined);
+              }}
+              className="shrink-0 rounded border border-line px-1 text-[9px] text-ink-faint transition-colors hover:border-line-strong hover:text-ink"
+            >
+              reveal
+            </button>
+          ) : null}
         </span>
         {note ? (
           <span className="mt-0.5 block text-[10px] text-ink-faint">{note}</span>

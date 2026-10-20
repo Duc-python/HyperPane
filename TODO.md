@@ -51,8 +51,14 @@ green (tests, clippy, typecheck, and the app actually running).
       Needs each agent CLI's own usage readout, so it is per-agent work.
 - [ ] Spawn approval card. Only meaningful once a *child* can ask for a pane;
       today the person clicking the palette is already the approver.
-- [ ] Remove the superseded `agent_launch` and `agent_worktree` commands, now
-      that `agent_open` does both behind the guard.
+- [x] The superseded `agent_launch` and `agent_worktree` commands are gone, with
+      their frontend wrappers: `agent_open` does both behind the guard, and two
+      ways to start an agent is one way too many.
+- [x] Every file Settings names can be shown in the file manager. The button says
+      "reveal" and the row's path is still selectable text, because the reason to
+      look at these files is usually to copy a line out of one. The file manager
+      selects the file rather than opening it: these are the app's records, and
+      "open" on a JSON file is a program nobody chose.
 - [ ] Worktree housekeeping: offer to remove a finished run's worktree, and
       tolerate a directory that is still held instead of failing silently.
       One leftover empty directory remains from the verification run: a handle

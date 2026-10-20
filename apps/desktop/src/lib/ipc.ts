@@ -213,18 +213,6 @@ export interface AgentInfo {
   installed: boolean;
 }
 
-export interface AgentLaunch {
-  program: string;
-  args: string[];
-  needsPaste: boolean;
-  label: string;
-}
-
-export interface WorktreeInfo {
-  path: string;
-  branch: string;
-}
-
 /** Mirrors the app's `WorktreeStateView`: one of the app's worktrees, described. */
 export interface WorktreeStateView {
   path: string;
@@ -488,6 +476,9 @@ export interface PeersView {
 
 export const identityInfo = () => invoke<IdentityInfo>("identity_info");
 
+/** Show one of the app's own files in the file manager. */
+export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+
 export const peersList = () => invoke<PeersView>("peers_list");
 
 /**
@@ -700,12 +691,6 @@ export const teamAdvance = (panes: string[]) =>
 export const teamConfirm = () => invoke<Hold | null>("team_confirm");
 
 export const agentsAvailable = () => invoke<AgentInfo[]>("agents_available");
-
-export const agentLaunch = (agent: string, task: string) =>
-  invoke<AgentLaunch>("agent_launch", { agent, task });
-
-export const agentWorktree = (repo: string, seed: string) =>
-  invoke<WorktreeInfo>("agent_worktree", { repo, seed });
 
 /** What is in the app's own worktree directory. Nothing is removed by reading it. */
 export const worktreesList = () => invoke<WorktreesView>("worktrees_list");

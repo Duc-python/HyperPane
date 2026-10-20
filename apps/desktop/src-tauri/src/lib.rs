@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 /// How long a pane may be silent before it stops counting as working. It is a
 /// display threshold, not a judgement: an agent thinking hard and an agent
@@ -562,62 +563,6 @@ fn agents_available() -> Vec<AgentAvailability> {
         .collect()
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentLaunch {
-    program: String,
-    args: Vec<String>,
-    /// The task has to be typed in once the agent is up.
-    needs_paste: bool,
-    label: &'static str,
-}
-
-/// How to start one agent, already wrapped for the platform.
-#[tauri::command]
-fn agent_launch(agent: String, task: String) -> Result<AgentLaunch, String> {
-    let spec = hp_agents::by_id(&agent).ok_or_else(|| {
-        format!(
-            "unknown agent {agent}; known ids are {}",
-            hp_agents::known_ids().join(", ")
-        )
-    })?;
-
-    let (program, args) = spec.launch(&task);
-    let (program, args) = hp_agents::spawn_argv(program, &args);
-
-    Ok(AgentLaunch {
-        program,
-        args,
-        needs_paste: spec.needs_paste(),
-        label: spec.label,
-    })
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WorktreeInfo {
-    path: String,
-    branch: String,
-}
-
-/// Create a worktree for an agent run and report where it is.
-#[tauri::command]
-fn agent_worktree(
-    repo: String,
-    seed: String,
-    state: State<'_, AppState>,
-) -> Result<WorktreeInfo, String> {
-    let branch = hp_agents::worktree::branch_name(&seed);
-    let worktree = hp_agents::worktree::create(Path::new(&repo), &state.worktree_dir, &branch)
-        .map_err(|error| error.to_string())?;
-
-    Ok(WorktreeInfo {
-        path: worktree.path.display().to_string(),
-        branch: worktree.branch,
-    })
-}
-
-/// One of the app's worktrees, or a directory left where one was.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorktreeStateView {
@@ -1367,6 +1312,17 @@ fn team_confirm(state: State<'_, AppState>) -> Option<Hold> {
 #[tauri::command]
 fn audit_path(state: State<'_, AppState>) -> String {
     state.audit.path().display().to_string()
+}
+
+/// Show one of the app's own files in the file manager.
+///
+/// The file manager selects the item rather than opening it: these are records,
+/// and "open" on a JSON file is a program nobody chose.
+#[tauri::command]
+fn reveal_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .reveal_item_in_dir(Path::new(&path))
+        .map_err(|error| error.to_string())
 }
 
 /// Agent ids that are actually installed on this machine.
@@ -2581,12 +2537,11 @@ pub fn run() {
             app_info,
             agent_catalogue,
             agents_available,
-            agent_launch,
-            agent_worktree,
             worktrees_list,
             worktree_remove,
             agent_open,
             audit_path,
+            reveal_path,
             plugins_list,
             plugins_reload,
             plugins_open,
