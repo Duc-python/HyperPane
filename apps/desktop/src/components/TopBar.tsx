@@ -102,7 +102,7 @@ export function TopBar({
           <span
             key={pane.id}
             data-active={pane.focused}
-            className="flex max-w-44 min-w-0 shrink-0 items-center gap-1 rounded-md border border-line/60 bg-base/70 px-1.5 py-1 data-[active=true]:border-accent-strong/70 data-[active=true]:bg-accent-soft/25"
+            className="flex max-w-44 min-w-20 shrink items-center gap-1 rounded-md border border-line/60 bg-base/70 px-1.5 py-1 data-[active=true]:border-accent-strong/70 data-[active=true]:bg-accent-soft/25"
           >
             <PaneGlyph tone={pane.tone} label={TONE_LABEL[pane.tone]} />
             <button

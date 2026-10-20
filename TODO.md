@@ -41,6 +41,10 @@ green (tests, clippy, typecheck, and the app actually running).
       replaces a key people rely on. Not shipped while it cannot be verified.
 - [x] Profile editor in the UI: `mod+,`, the `Profiles…` palette entry, or the
       profile name in the title bar
+- [x] A tab shrinks before the strip cuts one off. Three panes at 900px wide used
+      to end in a half-drawn tab at the right edge, with no ellipsis and nothing
+      to say it scrolled; the tabs now give way down to a floor, and only then
+      does the strip scroll.
 
 ## P2 — agents
 
