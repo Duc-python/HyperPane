@@ -171,18 +171,19 @@ impl ResultScanner {
 
     /// Feed output. Returns the last result completed by this chunk.
     pub fn push(&mut self, chunk: &str) -> Option<RunResult> {
-        self.pending.push_str(chunk);
+        // Stripped before the lines are cut, because a cursor move is what
+        // makes a row here: a full-screen interface writes rows that way and
+        // never writes a newline between them.
+        self.pending.push_str(&strip_ansi(chunk));
         let mut latest = None;
 
         while let Some(newline) = self.pending.find('\n') {
-            let raw: String = self.pending.drain(..=newline).collect();
-            let line = strip_ansi(&raw);
+            let line: String = self.pending.drain(..=newline).collect();
             let trimmed = line.trim();
 
             if let Some(block) = self.block.as_mut() {
                 if is_field_line(trimmed) {
-                    block.push(' ');
-                    block.push_str(trimmed);
+                    join_fragment(block, trimmed);
                     if is_complete(block) || block.len() > Self::MAX_BLOCK {
                         latest = self.finish().or(latest);
                     }
@@ -214,6 +215,20 @@ impl ResultScanner {
     }
 }
 
+/// Add one fragment of a report to the open block.
+///
+/// A full-screen interface draws its rows with cursor moves rather than
+/// newlines, so a row break can land in the middle of a field: `files` on one
+/// row and `=none` on the next. Glue when the break touches the `=` and put a
+/// space everywhere else, which is what the text would have looked like.
+fn join_fragment(block: &mut String, fragment: &str) {
+    let glue = block.ends_with('=') || fragment.starts_with('=');
+    if !block.is_empty() && !glue {
+        block.push(' ');
+    }
+    block.push_str(fragment);
+}
+
 /// Whether a line is one more field of a report that is already open.
 fn is_field_line(line: &str) -> bool {
     !line.is_empty() && line.contains('=') && !line.contains("RESULT")
@@ -243,11 +258,20 @@ fn strip_ansi(text: &str) -> String {
         }
         match characters.next() {
             // Control Sequence Introducer: runs to a byte in the range @..~.
+            //
+            // A cursor move ends a row. A full-screen interface redraws rows
+            // that way instead of writing newlines, so text that a person sees
+            // as separate lines would otherwise arrive glued into one.
             Some('[') => {
+                let mut last = None;
                 for next in characters.by_ref() {
+                    last = Some(next);
                     if ('@'..='~').contains(&next) {
                         break;
                     }
+                }
+                if matches!(last, Some('H' | 'f')) {
+                    out.push('\n');
                 }
             }
             // Operating System Command: runs to BEL, or to ESC \.
@@ -372,6 +396,18 @@ mod tests {
         let result = scanner.push("\n").expect("a report");
         assert_eq!(result.status, RunStatus::Blocked);
         assert!(result.files.is_empty());
+    }
+
+    #[test]
+    fn a_report_drawn_with_cursor_moves_is_read() {
+        // What a full-screen agent writes: rows placed with cursor moves, no
+        // newlines, and a row break in the middle of `files=none`.
+        let mut scanner = ResultScanner::default();
+        let chunk = "\x1b[14;5HRESULT status=done files\x1b[15;5H=none tests=none\x1b[1;1H";
+        let result = scanner.push(chunk).expect("a report");
+        assert_eq!(result.status, RunStatus::Done);
+        assert!(result.files.is_empty());
+        assert_eq!(result.tests, TestOutcome::None);
     }
 
     #[test]

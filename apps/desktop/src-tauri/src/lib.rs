@@ -367,14 +367,19 @@ fn pane_spawn(
 
     let pane_id = spec.id.clone();
     let audit_id = spec.id.clone();
-    if spec.agent.is_some() {
-        state.runs.lock().insert(
-            pane_id.clone(),
-            RunState {
-                agent: spec.agent.clone(),
+    if let Some(agent) = spec.agent.clone() {
+        // A run opened from the palette already has its start time; a pane
+        // coming back from a session does not, and a restored agent pane still
+        // needs to be watched for phases and for its own report.
+        state
+            .runs
+            .lock()
+            .entry(pane_id.clone())
+            .or_insert_with(|| RunState {
+                agent: Some(agent),
+                started_at: Some(Instant::now()),
                 ..RunState::default()
-            },
-        );
+            });
     }
 
     state
@@ -399,6 +404,7 @@ fn pane_sink(state: &AppState, pane_id: String, on_event: Channel<PtyEvent>) -> 
     let runs = Arc::clone(&state.runs);
     let directories = Arc::clone(&state.directories);
     let rooms = Arc::clone(&state.room_host);
+
     Arc::new(move |event| {
         // A child's report is read from the stream it already writes to; no
         // extra channel is needed, and the terminal still receives every byte.
