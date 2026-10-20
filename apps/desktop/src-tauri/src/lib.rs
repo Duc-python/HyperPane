@@ -81,6 +81,23 @@ impl RunState {
             Some(_) => RunPhase::Quiet,
         }
     }
+
+    /// Whether this run is over as far as the wave it belongs to is concerned.
+    ///
+    /// The process is not the unit: opencode returns to its own prompt when the
+    /// task is done, so a wave that waited for the process to exit would wait
+    /// forever while both members sat there having reported. The report is the
+    /// last thing a member is asked to print, and the pane staying quiet after
+    /// it is the only evidence the app has that the turn is over.
+    fn finished(&self) -> bool {
+        if self.exit.is_some() {
+            return true;
+        }
+        self.result.is_some()
+            && self
+                .last_output_at
+                .is_some_and(|last| last.elapsed() >= QUIET_AFTER)
+    }
 }
 
 /// What a member reported about its own work.
@@ -1163,19 +1180,16 @@ fn snapshot_claims(run: &mut TeamRun, report: &WaveReport, findings_dir: &Path) 
     }
 }
 
-/// How many of a wave's panes are still alive.
+/// How many of a wave's panes are still working.
 ///
 /// A pane that is gone counts as not running: a person closing a pane has to
 /// move the run on, or the wave would wait forever for something that no longer
-/// exists.
+/// exists. A pane whose member reported and then went quiet is not running
+/// either, for the same reason - the CLI stays open when its turn ends.
 fn running_panes(runs: &HashMap<String, RunState>, panes: &[String]) -> usize {
     panes
         .iter()
-        .filter(|pane| {
-            runs.get(*pane)
-                .map(|run| run.exit.is_none())
-                .unwrap_or(false)
-        })
+        .filter(|pane| runs.get(*pane).is_some_and(|run| !run.finished()))
         .count()
 }
 
@@ -2726,5 +2740,58 @@ mod tests {
     #[test]
     fn an_empty_task_stays_empty_so_the_agent_opens_interactively() {
         assert_eq!(with_report_line("   "), "");
+    }
+}
+
+#[cfg(test)]
+mod wave_tests {
+    use super::{running_panes, RunResult, RunState};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    fn member(result: bool, quiet_for: Option<Duration>) -> RunState {
+        let mut state = RunState::default();
+        if result {
+            state.result = Some(RunResult {
+                status: hp_agents::RunStatus::Done,
+                files: Vec::new(),
+                tests: hp_agents::TestOutcome::None,
+            });
+        }
+        state.last_output_at = quiet_for.map(|ago| Instant::now() - ago);
+        state
+    }
+
+    #[test]
+    fn a_member_that_reported_and_went_quiet_is_not_running() {
+        // opencode stays at its prompt after a task; waiting for the process
+        // left every wave running forever.
+        let runs = HashMap::from([(
+            "p1".to_string(),
+            member(true, Some(Duration::from_secs(60))),
+        )]);
+        assert_eq!(running_panes(&runs, &["p1".to_string()]), 0);
+    }
+
+    #[test]
+    fn a_member_still_drawing_after_its_report_is_still_running() {
+        let runs = HashMap::from([("p1".to_string(), member(true, Some(Duration::ZERO)))]);
+        assert_eq!(running_panes(&runs, &["p1".to_string()]), 1);
+    }
+
+    #[test]
+    fn a_member_that_died_without_a_report_is_not_running() {
+        let mut gone = member(false, Some(Duration::from_secs(60)));
+        gone.exit = Some(0);
+        let runs = HashMap::from([("p1".to_string(), gone)]);
+        assert_eq!(running_panes(&runs, &["p1".to_string()]), 0);
+    }
+
+    #[test]
+    fn a_member_that_never_printed_anything_counts_as_working() {
+        // It was just started: silence is not a report, and the wave has to
+        // wait for the member rather than assume it is done.
+        let runs = HashMap::from([("p1".to_string(), member(false, None))]);
+        assert_eq!(running_panes(&runs, &["p1".to_string()]), 1);
     }
 }
