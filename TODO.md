@@ -48,7 +48,14 @@ green (tests, clippy, typecheck, and the app actually running).
 
 ## P2 — agents
 
-- [x] Agent catalogue as data, with per-agent launch rules
+- [x] Agent catalogue as data, with per-agent launch rules. A task that goes
+      through a `.cmd` shim is reduced to one line first: `cmd.exe` ends its
+      command at the first line break, so a five-section team brief used to
+      reach the agent as the single word "GOAL" and the agent asked what the
+      goal was. Found by watching a debate run instead of reading the code.
+- [ ] A declared delivery, `pastedAfterStart`, has no side that types: an agent
+      whose CLI takes no prompt argument starts bare and the task is dropped.
+      No installed CLI needs it yet, and it has to be finished before one does.
 - [x] Open an installed agent in a pane from the palette, task typed there
 - [x] Read the child's own `RESULT` line and show it as a claim. A run started
       on its own is now asked for that line - the task ends with it, on one line
@@ -107,6 +114,10 @@ green (tests, clippy, typecheck, and the app actually running).
       role that writes keeps the preset's order.
 - [x] Team run view: a wave timeline with live status, rather than one line in
       the header and a bar when a hold is up
+- [x] A wave lands in the widest pane and is tiled into equal columns, and the
+      wave before it closes as the next one opens. Splitting whichever pane was
+      focused put two debaters into a quarter-width column where their own
+      interface wrapped every word.
 - [x] Show what each member claimed when a wave finishes, and keep it after the
       pane closes. A member that printed no `RESULT` line reads "no report".
 - [x] The findings themselves, not just the claim: the brief tells every member

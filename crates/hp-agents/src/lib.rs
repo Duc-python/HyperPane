@@ -284,6 +284,11 @@ pub fn spawn_argv(program: &str, args: &[String]) -> (String, Vec<String>) {
         return (program.to_string(), args.to_vec());
     };
 
+    command_for(&path, args)
+}
+
+/// The command line that starts a resolved program.
+fn command_for(path: &std::path::Path, args: &[String]) -> (String, Vec<String>) {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -292,11 +297,39 @@ pub fn spawn_argv(program: &str, args: &[String]) -> (String, Vec<String>) {
 
     if extension == "cmd" || extension == "bat" {
         let mut wrapped = vec!["/c".to_string(), path.to_string_lossy().into_owned()];
-        wrapped.extend_from_slice(args);
+        wrapped.extend(args.iter().map(|arg| single_line(arg)));
         ("cmd.exe".to_string(), wrapped)
     } else {
         (path.to_string_lossy().into_owned(), args.to_vec())
     }
+}
+
+/// An argument that survives the trip through a batch shim.
+///
+/// A command line cannot carry a line break through `cmd.exe`: the break ends
+/// the command there, and everything after it never reaches the program. A team
+/// brief - five sections, each on its own line - arrived at the agent as the
+/// single word "GOAL", so the agent asked what the goal was. Breaks become
+/// spaces, which is how one paragraph reads anyway.
+fn single_line(argument: &str) -> String {
+    let mut out = String::with_capacity(argument.len());
+    let mut after_space = false;
+    for character in argument.chars() {
+        let character = match character {
+            '\r' | '\n' | '\t' => ' ',
+            other => other,
+        };
+        if character == ' ' {
+            if after_space {
+                continue;
+            }
+            after_space = true;
+        } else {
+            after_space = false;
+        }
+        out.push(character);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -361,5 +394,46 @@ mod tests {
         let (program, args) = spawn_argv("hyperpane-not-a-real-program-xyz", &[]);
         assert_eq!(program, "hyperpane-not-a-real-program-xyz");
         assert!(args.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{command_for, single_line};
+    use std::path::Path;
+
+    #[test]
+    fn a_brief_survives_the_batch_shim() {
+        // cmd.exe ends the command at the first line break; a brief used to
+        // arrive as its first word, and the agent asked what the goal was.
+        let brief = "GOAL\nShould we ship it?\n\nSCOPE\nRead only".to_string();
+        let (program, args) = command_for(
+            Path::new("C:\\tools\\opencode.cmd"),
+            &["--prompt".to_string(), brief],
+        );
+
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(args[0], "/c");
+        assert_eq!(args[1], "C:\\tools\\opencode.cmd");
+        assert_eq!(args[2], "--prompt");
+        assert!(!args[3].contains('\n'), "{:?}", args[3]);
+        assert!(
+            args[3].starts_with("GOAL Should we ship it? SCOPE Read only"),
+            "{:?}",
+            args[3]
+        );
+    }
+
+    #[test]
+    fn a_native_program_keeps_its_argument_exactly() {
+        let brief = "GOAL\nShould we ship it?".to_string();
+        let (program, args) = command_for(Path::new("C:\\tools\\opencode.exe"), &[brief.clone()]);
+        assert_eq!(program, "C:\\tools\\opencode.exe");
+        assert_eq!(args, vec![brief]);
+    }
+
+    #[test]
+    fn runs_of_breaks_become_one_space() {
+        assert_eq!(single_line("a\r\n\r\nb\tc  d"), "a b c d");
     }
 }
