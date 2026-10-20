@@ -839,7 +839,32 @@ fn agent_open(request: AgentOpenRequest, state: State<'_, AppState>) -> Result<A
         );
     }
 
-    open_run(&state, &request.pane, &request.agent, &request.task, repo)
+    open_run(
+        &state,
+        &request.pane,
+        &request.agent,
+        &with_report_line(&request.task),
+        repo,
+    )
+}
+
+/// The task, plus the one line the app reads back as the run's report.
+///
+/// A claim is what the child says about its own work, and the app can only show
+/// one if the child was asked for it. Team briefs already end with this line; a
+/// run started on its own never was, so its pane had no claim to show. It stays
+/// on one line so it can be typed into an agent's prompt as well as passed as
+/// an argument, and an empty task stays empty: that is the interactive launch.
+fn with_report_line(task: &str) -> String {
+    let trimmed = task.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{trimmed} When you are done, end with one line: \
+         RESULT status=done|failed|blocked files=<paths you changed> \
+         tests=pass|fail|none"
+    )
 }
 
 #[derive(Deserialize)]
@@ -2600,4 +2625,30 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to start HyperPane");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_report_line;
+
+    #[test]
+    fn a_task_ends_with_the_line_the_app_reads_back() {
+        let task = with_report_line("  find the bug  ");
+        assert!(task.starts_with("find the bug "), "{task}");
+        assert!(
+            task.ends_with(
+                "RESULT status=done|failed|blocked files=<paths you changed> \
+                 tests=pass|fail|none"
+            ),
+            "{task}"
+        );
+        // One line: an agent whose task is typed into its prompt would submit
+        // at the first newline.
+        assert!(!task.contains('\n'), "{task}");
+    }
+
+    #[test]
+    fn an_empty_task_stays_empty_so_the_agent_opens_interactively() {
+        assert_eq!(with_report_line("   "), "");
+    }
 }

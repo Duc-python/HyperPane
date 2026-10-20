@@ -18,7 +18,9 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Session persistence: layout + profiles survive a restart
 - [x] Profile model: shell, args, cwd, env
 - [x] Keybinding registry: one table, no hard-coded chords
-- [x] Command palette (`mod+shift+p`) with fuzzy filtering
+- [x] Command palette (`mod+shift+p`) with fuzzy filtering. A row's label keeps
+      the room it needs and a long hint gives way: "Update from source…" was
+      showing as "Up…" beside its explanation.
 - [x] OSC 7 working directory in the pane header
 - [x] Pane titles from OSC 0/2, with the profile name as a fallback
 - [x] Shell integration: generated hooks (PowerShell via `-EncodedCommand`,
@@ -26,7 +28,11 @@ green (tests, clippy, typecheck, and the app actually running).
 - [x] Exit status of the last command, shown in the pane header
 - [x] Command duration from the `C` mark, for shells that emit one
       (bash does, through `PS0`)
-- [x] Jump to the previous or next prompt in the scrollback
+- [x] Jump to the previous or next prompt in the scrollback. Every OSC 133 mark
+      in a read is delivered, not only the last: a shell emits the end of one
+      command and the start of the next prompt back to back, so a coalesced read
+      used to lose the exit status and leave a finished command looking like it
+      was still running. Found by an opencode run inside the app.
 - [x] A pane's shell and scrollback survive a layout change. A session lives
       outside the view that draws it, so splitting a pane no longer restarts the
       pane beside it. Do not put a PTY back inside a component: the element tree
@@ -40,7 +46,11 @@ green (tests, clippy, typecheck, and the app actually running).
 
 - [x] Agent catalogue as data, with per-agent launch rules
 - [x] Open an installed agent in a pane from the palette, task typed there
-- [x] Read the child's own `RESULT` line and show it as a claim
+- [x] Read the child's own `RESULT` line and show it as a claim. A run started
+      on its own is now asked for that line - the task ends with it, on one line
+      so an agent whose task is typed into its prompt does not submit at the
+      first newline. Team briefs always asked; single runs never did, so their
+      pane had nothing to show.
 - [x] Worktrees: create on `agent/<8>`, reuse, remove without deleting the branch
 - [x] Caps: live agent panes and spawn rate, enforced behind one command
 - [x] Activity log: append-only JSON lines, refusals included
@@ -276,6 +286,13 @@ green (tests, clippy, typecheck, and the app actually running).
       decision, not a default, so a restored run comes back waiting for one. A
       stored launch is dropped as soon as its pane is gone, by the session file and
       again by the app, so a later split that reuses a pane id cannot inherit it.
+- [x] A restart proved the task *was* on disk: it travelled inside the stored
+      launch arguments, so the next start gave the same order a second time and
+      left the sentence in plaintext. A pane keeps two launches now - the live one
+      with its task, and the same CLI without a task - and the session store keeps
+      the second itself, so no caller can put a task in the file. An older file
+      loses its arguments when it loads. Verified by restarting: the pane came
+      back as an idle opencode in its worktree, with no `agent.open` in the log.
 - [x] The pairing test's read timeout was five seconds, which is less than the
       PBKDF2 stretch it deliberately pays (600,000 rounds). It failed on a loaded
       machine while the protocol was working perfectly. Thirty seconds now, still
@@ -302,7 +319,10 @@ green (tests, clippy, typecheck, and the app actually running).
       only when it is empty, unless a person has answered twice. Branches are never
       deleted - only a person deletes work - so commits stay reachable by name.
       The path is held against the app's own directory before anything is touched,
-      and every removal is in the activity log.
+      and every removal is in the activity log. A worktree a pane is running in
+      says so - "a run is using this" - and its removal waits for that pane to
+      close, because the app already knows which panes are open and an operating
+      system's directory-in-use error reads like a bug in the app.
 - [x] A directory that is already a worktree of a *different* repository is now
       refused instead of reused. A branch name comes from a run's seed alone, so
       two runs in two repositories can derive the same name, and reusing the
