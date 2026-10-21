@@ -818,10 +818,13 @@ export default function App() {
         title: `Open team run: ${teamRun.title}`,
         group: "Team",
         hint:
-          teamRun.running > 0
-            ? `${teamRun.running} running`
-            : teamRun.holding
-              ? "waiting on you"
+          // A hold outranks a count: an agent that has reported is still a live
+          // process (its CLI stays open), and the header said "1 running" while
+          // the bar underneath was already asking the person to decide.
+          teamRun.holding
+            ? "waiting on you"
+            : teamRun.running > 0
+              ? `${teamRun.running} running`
               : "idle",
         run: () => setShowRun(true),
       });

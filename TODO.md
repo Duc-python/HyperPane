@@ -56,6 +56,10 @@ green (tests, clippy, typecheck, and the app actually running).
 - [ ] A declared delivery, `pastedAfterStart`, has no side that types: an agent
       whose CLI takes no prompt argument starts bare and the task is dropped.
       No installed CLI needs it yet, and it has to be finished before one does.
+- [ ] The 8191-character limit of a `cmd.exe` command line is respected by the
+      brief cap but not by a single run's task: a very long task still fails
+      with cmd's own words. Measure the line before spawning and say which limit
+      was hit, instead of letting a member die with "The command line is too long."
 - [x] Open an installed agent in a pane from the palette, task typed there
 - [x] Read the child's own `RESULT` line and show it as a claim. A run started
       on its own is now asked for that line - the task ends with it, on one line
@@ -129,6 +133,11 @@ green (tests, clippy, typecheck, and the app actually running).
       preset uses it - two cases, an answer to both, then a judge - and a
       read-only worker now says "reads" in the plan rather than "writes" beside
       "read-only".
+- [ ] A wave whose member never starts ends as if the member had finished: the
+      judge pane said "The command line is too long.", the run logged
+      `team.finished`, and only a screenshot showed why. Keep the failed
+      member's claim (failed, with its exit code) and hold the last wave when it
+      produced no report at all.
 - [x] A brief is one argument on a `cmd.exe` command line, and that line ends at
       8191 characters: the judge of a three-case debate never started at all -
       its pane said "The command line is too long." - and the run reported
