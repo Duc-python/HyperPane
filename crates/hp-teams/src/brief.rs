@@ -16,7 +16,15 @@
 
 /// A brief is a prompt, not a document. Past this, something is wrong with the
 /// preset rather than with the task.
-pub const MAX_BRIEF_BYTES: usize = 64 * 1024;
+///
+/// The ceiling is a Windows one: a `.cmd` shim is started through `cmd.exe`,
+/// whose command line ends at 8191 characters, and the brief is one argument on
+/// it. A three-reading debate brief at the old 64 KiB cap never reached the
+/// judge at all - the pane said "The command line is too long." and the run
+/// moved on as if the judge had reported. Seven kilobytes leaves room for the
+/// program, the arguments and the quotes, and is still far more prompt than a
+/// member needs.
+pub const MAX_BRIEF_BYTES: usize = 7 * 1024;
 
 /// What an earlier wave reported, for a role that is meant to answer it.
 ///
@@ -310,6 +318,35 @@ mod tests {
         let said = brief.find("WHAT EARLIER WAVES SAID").expect("readings");
         let report = brief.find("REPORT").expect("report");
         assert!(spec < said && said < report, "{brief}");
+    }
+
+    #[test]
+    fn a_three_case_debate_fits_a_windows_command_line() {
+        // The judge reads the two cases and the answer: three findings files of
+        // a couple of kilobytes each. The brief is one argument on a `cmd.exe`
+        // command line, which ends at 8191 characters - at the old cap this
+        // brief was cut by cmd itself, the judge never started, and the run
+        // reported itself finished.
+        let findings = "x".repeat(3000);
+        let readings: Vec<Reading> = (1..=3)
+            .map(|wave| Reading {
+                wave,
+                label: "Case",
+                claim: Some("done, no files, no tests"),
+                path: Some("C:\\Users\\someone\\findings\\p9.md"),
+                findings: Some(findings.as_str()),
+            })
+            .collect();
+
+        let brief = write_brief(&BriefInput {
+            wave: 4,
+            readings: &readings,
+            ..input()
+        });
+
+        assert!(brief.len() < 8000, "{}", brief.len());
+        assert!(brief.contains("RESULT status="), "the report line was cut");
+        assert!(brief.contains("cut here"), "a cut finding says so");
     }
 
     #[test]

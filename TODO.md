@@ -129,6 +129,11 @@ green (tests, clippy, typecheck, and the app actually running).
       preset uses it - two cases, an answer to both, then a judge - and a
       read-only worker now says "reads" in the plan rather than "writes" beside
       "read-only".
+- [x] A brief is one argument on a `cmd.exe` command line, and that line ends at
+      8191 characters: the judge of a three-case debate never started at all -
+      its pane said "The command line is too long." - and the run reported
+      itself finished. The brief cap is now 7 KiB, chosen for that limit, with a
+      test that a three-reading brief stays under 8 KB and keeps the report line.
 - [x] What earlier waves said is capped in shares, not in total: each member
       gets an equal slice of half the brief, and a cut section says where the
       rest is. Without that, a wall of findings could push out the `RESULT` line
