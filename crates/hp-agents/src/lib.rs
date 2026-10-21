@@ -427,7 +427,10 @@ mod command_tests {
     #[test]
     fn a_native_program_keeps_its_argument_exactly() {
         let brief = "GOAL\nShould we ship it?".to_string();
-        let (program, args) = command_for(Path::new("C:\\tools\\opencode.exe"), &[brief.clone()]);
+        let (program, args) = command_for(
+            Path::new("C:\\tools\\opencode.exe"),
+            std::slice::from_ref(&brief),
+        );
         assert_eq!(program, "C:\\tools\\opencode.exe");
         assert_eq!(args, vec![brief]);
     }
