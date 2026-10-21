@@ -31,32 +31,42 @@ they write in. This rule covers what lands in the repository, not chat.
 
 ## Start here
 
-1. Read `TODO.md` for the phase in progress.
+1. Read `TODO.md` for the phase in progress and the gaps that are already known.
 2. Read `docs/architecture.md` for the data flow.
-3. Run the checks once before changing anything, so you know the baseline.
+3. Run `.\scripts\check.ps1` once before changing anything, so you know the baseline.
 
 ## What it is
 
 A local-first desktop terminal. Each pane can host a shell, a remote session or
 a coding agent, and a lead agent can open, brief and collect results from other
-agents in panes beside it. No account, no server, nothing leaves the machine
-unless a person opens it.
+agents in panes beside it. Teams run in waves; a room shares panes with another
+instance on the same machine (loopback only today). No account, no server,
+nothing leaves the machine unless a person opens it.
 
 ## Commands
 
 ```bash
 pnpm install
 pnpm dev                                   # frontend only, on :5173
-pnpm tauri dev                             # the app (the only way to run it)
+pnpm tauri dev                             # the full app
 pnpm --filter @hyperpane/desktop typecheck
-pnpm --filter @hyperpane/desktop build
+pnpm --filter @hyperpane/desktop build     # also required before cargo compiles the app crate
 ```
 
 ```powershell
 # Windows: cargo needs link.exe, which a plain shell does not have.
-pwsh -File scripts/with-msvc.ps1 -- cargo test --workspace
-pwsh -File scripts/with-msvc.ps1 -- cargo clippy --workspace --all-targets -- -D warnings
-pwsh -File scripts/with-msvc.ps1 -- cargo fmt --all
+# These run in Windows PowerShell 5.1; pwsh is not installed on every machine.
+.\scripts\with-msvc.ps1 -- cargo test --workspace
+.\scripts\with-msvc.ps1 -- cargo clippy --workspace --all-targets -- -D warnings
+.\scripts\with-msvc.ps1 -- cargo fmt --all
+
+# One crate, or one test by name
+.\scripts\with-msvc.ps1 -- cargo test -p hp-teams
+.\scripts\with-msvc.ps1 -- cargo test -p hp-teams a_three_case_debate
+pnpm --filter @hyperpane/desktop exec vitest run src/lib/panes.test.ts
+
+# The whole gate: fmt, clippy -D warnings, cargo test, typecheck, vitest, build.
+.\scripts\check.ps1
 ```
 
 ```bash
@@ -73,8 +83,13 @@ like PowerShell parameter names and would otherwise be consumed by the script.
 |---|---|
 | `hp-pty` | PTY sessions, pane registry, incremental UTF-8 decoding, event streaming |
 | `hp-core` | Domain: pane ids, split layout tree, workspaces, profiles, session |
-| `hp-agents` | Agent catalogue and launch adapters |
+| `hp-agents` | Agent catalogue, launch adapters, the `RESULT` claim reader |
+| `hp-teams` | Team presets, plans, five-part briefs, waves, gates, router |
+| `hp-shell` | Generated shell integration (OSC 7 / OSC 133) |
 | `hp-store` | Session persistence, written atomically |
+| `hp-mcp` | MCP client over stdio, both protocol eras |
+| `hp-room` | Room rules, host loop and client (TCP, loopback) |
+| `hp-identity` | Device key pair, pairing exchange, pinned peers |
 | `apps/desktop` | Tauri shell (Rust commands) and the React UI |
 
 Four invariants. Breaking one is a bug even if the tests pass:
@@ -89,6 +104,30 @@ Four invariants. Breaking one is a bug even if the tests pass:
    distributed system.
 4. **Ratios are clamped on both sides** of the IPC boundary, so no drag can
    produce a pane that cannot be clicked.
+
+## Agents and teams
+
+A child agent gets one text and no conversation history, so the launch path is
+where silent failures live:
+
+- **The command line is the limit.** A `.cmd`/`.bat` shim is started through
+  `cmd.exe`, which ends the command at the first line break and at 8191
+  characters. Arguments that go through a shim are reduced to one line, and a
+  brief is capped at 7 KiB (`hp-teams`). Without both, an agent received the
+  single word "GOAL", and a three-case judge never started at all.
+- **A brief is five parts**: goal, scope, specification, what earlier waves
+  said, verification, and the `RESULT status=... files=... tests=...` line the
+  app reads back. That line is a claim about the work, not a verified result.
+- **A later wave reads an earlier one.** `team_advance` hands every member the
+  previous waves' claims and findings, clipped, each with the file it came from.
+  Do not drop that: a challenger's job is to answer findings it was given.
+- **A member's turn ends at its report, not its process.** opencode returns to
+  its own prompt instead of exiting, so a wave waits for a report plus five
+  seconds of quiet. `running_panes` and the claim snapshot share that rule.
+- **The claim reader is deliberately forgiving** (`hp-agents::result`): block
+  form, box borders, ANSI and cursor-move rows, a row the terminal wrapped
+  mid-path, `files=none`. Its tests are the specification; a real report shape
+  that fails should become one.
 
 ## Conventions
 
@@ -137,29 +176,40 @@ Each of these cost real debugging time. They are not hypothetical.
    screenshot, choose query text without `s f r x j z w` next to a vowel, or the
    test will chase a character-loss ghost that does not exist. `tree` is a good
    query; `worktree` is not.
+7. **`apps/desktop/dist` must exist before cargo compiles the app crate.**
+   `tauri-build` reads `frontendDist` at compile time and fails when the
+   directory is missing. CI builds the frontend first for that reason; locally,
+   run `pnpm --filter @hyperpane/desktop build` before `cargo test` or `build`.
+8. **A release needs `--features custom-protocol`.** Without it the binary keeps
+   the development `devUrl` and opens `localhost:5173`, so the window shows a
+   connection error even though the frontend was built. `pnpm tauri build` adds
+   the feature itself; a plain `cargo build --release` must spell it out.
+9. **The running executable is locked on Windows.** Stop the app before
+   rebuilding, or cargo fails at the last step with `Access is denied`.
 
 ## Definition of done
 
 A change is not finished until all of these hold:
 
-1. `cargo fmt --all --check` is clean.
-2. `cargo clippy --workspace --all-targets -- -D warnings` is clean.
-3. `cargo test --workspace` passes, with a test for the behaviour you added.
-4. `pnpm --filter @hyperpane/desktop typecheck` and `build` pass.
-5. The app runs and the change is visible in it. For UI work, capture it:
+1. `.\scripts\check.ps1` passes — format, clippy with `-D warnings`, Rust tests,
+   web typecheck, vitest and the web build, in that order, stopping at the first
+   failure.
+2. There is a test for the behaviour you added, in the module that owns it.
+3. The app runs and the change is visible in it. For UI work, capture it:
 
 ```powershell
-pwsh -File scripts/capture-window.ps1 -Exe target\debug\hyperpane.exe -Out shot.png
+.\scripts\capture-window.ps1 -Exe target\debug\hyperpane.exe -Out shot.png -KeepRunning
 ```
 
-Then tick the line in `TODO.md` and commit. Small commits that each end green
-beat one large commit that does not.
+`-KeepRunning` leaves the app up for a person or a driver to use it. Then tick
+the line in `TODO.md` and commit. Commits are `type(scope): summary`, imperative,
+with the reasoning in the body; small green commits beat one big one.
 
 The app can be driven and photographed without a person at the screen:
 
 ```powershell
 # Split twice, then photograph the result
-pwsh -File scripts/capture-window.ps1 -Exe target\debug\hyperpane.exe `
+.\scripts\capture-window.ps1 -Exe target\debug\hyperpane.exe `
   -Out shot.png -Keys @("^+e", "^+o") -ErrorLog app.err
 ```
 
@@ -167,6 +217,14 @@ pwsh -File scripts/capture-window.ps1 -Exe target\debug\hyperpane.exe `
 script reports handle and thread counts so a leak shows up as a climbing
 number. It refuses to send a keystroke unless the app holds the foreground,
 because the alternative is typing `{ENTER}` into somebody else's terminal.
+
+## Watching a real run
+
+The data directory is the ground truth: on Windows
+`%APPDATA%\app.hyperpane.desktop`, moved by `HYPERPANE_DATA_DIR`. `audit.log` has
+every spawn, refusal and team wave; `findings/` has what each member wrote;
+`session.json` has the layout and which pane runs which agent. A second instance
+for pairing tests needs its own `HYPERPANE_DATA_DIR`, or both share one identity.
 
 ## Reporting
 
