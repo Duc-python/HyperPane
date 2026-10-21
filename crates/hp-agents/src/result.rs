@@ -189,6 +189,19 @@ impl ResultScanner {
                     }
                     continue;
                 }
+                // A terminal interface wraps a long report at its own edge, so
+                // the row after a field can be the rest of that field. Only a
+                // cut path is joined: prose that follows an unfinished report
+                // would otherwise be swallowed into `files`, which is a claim
+                // nobody made. The observed cut is after a separator.
+                let cut_path = block.ends_with('\\') || block.ends_with('/');
+                if cut_path && !trimmed.is_empty() {
+                    join_fragment(block, trimmed);
+                    if is_complete(block) {
+                        latest = self.finish().or(latest);
+                    }
+                    continue;
+                }
                 // Something that is not a field ends the report: a blank line,
                 // a prompt, the next line of the conversation.
                 latest = self.finish().or(latest);
@@ -222,7 +235,11 @@ impl ResultScanner {
 /// row and `=none` on the next. Glue when the break touches the `=` and put a
 /// space everywhere else, which is what the text would have looked like.
 fn join_fragment(block: &mut String, fragment: &str) {
-    let glue = block.ends_with('=') || fragment.starts_with('=');
+    // A path cut at a separator is one path, not a path and a word.
+    let glue = block.ends_with('=')
+        || fragment.starts_with('=')
+        || block.ends_with('\\')
+        || block.ends_with('/');
     if !block.is_empty() && !glue {
         block.push(' ');
     }
@@ -426,6 +443,34 @@ mod tests {
         assert!(scanner.push("ne files=a tests=none").is_none());
         let result = scanner.push("\n").expect("the report once the line ends");
         assert_eq!(result.status, RunStatus::Done);
+    }
+
+    #[test]
+    fn a_report_wrapped_by_the_terminal_is_still_a_report() {
+        // A full-screen agent UI wraps a long line at its own edge. The path
+        // was cut after AppData\ and continued on the next row; the wave was
+        // waiting for a report that had already been printed.
+        let mut scanner = ResultScanner::default();
+        assert!(scanner
+            .push("RESULT status=done files=C:\\Users\\x\\AppData\\")
+            .is_none());
+        let result = scanner
+            .push("Roaming\\findings\\p9.md tests=pass\n")
+            .expect("the wrapped report");
+        assert_eq!(
+            result.files,
+            vec!["C:\\Users\\x\\AppData\\Roaming\\findings\\p9.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn prose_after_a_truncated_report_is_not_swallowed_into_it() {
+        let mut scanner = ResultScanner::default();
+        assert!(scanner.push("RESULT status=done files=abc\n").is_none());
+        let result = scanner
+            .push("this is prose, not a path\n")
+            .expect("the report that was there");
+        assert_eq!(result.files, vec!["abc".to_string()]);
     }
 
     #[test]
