@@ -11,6 +11,14 @@ default-run = "hyperpane"
 name = "hyperpane_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# The frontend a release embeds. `tauri-build` reads `frontendDist` only when
+# this is on; without it a release binary keeps the `devUrl` and opens
+# localhost:5173, which is not running, so the window shows a connection error.
+# `tauri build` turns it on itself; a plain `cargo build --release` needs
+# `--features custom-protocol`.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
